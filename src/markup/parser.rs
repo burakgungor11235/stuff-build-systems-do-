@@ -1,22 +1,21 @@
-// stuff we are going to support
 //
 // bold
-// italic 
+// italic
 // strikethrough
-// heading 
+// heading
 // blockquote
 
-// Docs? hah! ask your AI for it :D 
+// Docs? hah! ask your AI for it :D
 // Honestly the most basic pipeline you've ever seen
 // Lex -> Parse -> Render.
-
+//
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Bold,
     Italic,
     Strikethrough,
     Heading(u8),
-    Blockquote,
+    Blockquote(u8), // level
     Text(String),
     Newline,
     Eof,
@@ -56,6 +55,22 @@ impl Lexer {
         tokens
     }
 
+    fn consume_text(&mut self) -> String {
+        let mut s = String::new();
+
+        while let Some(ch) = self.peek() {
+            match ch {
+                '*' | '_' | '~' | '#' | '>' | '\n' => break,
+                _ => {
+                    s.push(ch);
+                    self.advance();
+                }
+            }
+        }
+
+        s
+    }
+
     fn next_token(&mut self) -> Token {
         let Some(ch) = self.peek() else {
             return Token::Eof;
@@ -84,16 +99,22 @@ impl Lexer {
                 }
             }
             '>' => {
-                self.advance();
-                Token::Blockquote
+                let mut level = 0;
+
+                while self.peek() == Some('>') {
+                    self.advance();
+                    level += 1;
+                }
+
+                Token::Blockquote(level.min(6) as u8) 
             }
             '\n' => {
                 self.advance();
                 Token::Newline
             }
             _ => {
-                self.advance();
-                Token::Text(ch.to_string())
+                let text = self.consume_text();
+                Token::Text(text)
             }
         }
     }
@@ -105,9 +126,62 @@ pub enum AstNode {
     Italic(Box<AstNode>),
     Strikethrough(Box<AstNode>),
     Heading(u8, Box<AstNode>),
-    Blockquote(Vec<AstNode>),
+    Blockquote { lvl: u8, children: Vec<AstNode> },
     Text(String),
     Paragraph(Vec<AstNode>),
+}
+
+impl AstNode {
+    pub fn to_str(&self) -> String {
+        self.to_str_indented(0)
+    }
+
+    fn to_str_indented(&self, indent: usize) -> String {
+        let pad = "  ".repeat(indent);
+
+        match self {
+            AstNode::Bold(node) => {
+                format!("{}Bold\n{}", pad, node.to_str_indented(indent + 1))
+            }
+            AstNode::Italic(node) => {
+                format!("{}Italic\n{}", pad, node.to_str_indented(indent + 1))
+            }
+            AstNode::Strikethrough(node) => {
+                format!("{}Strikethrough\n{}", pad, node.to_str_indented(indent + 1))
+            }
+            AstNode::Heading(level, node) => {
+                format!(
+                    "{}Heading(level={})\n{}",
+                    pad,
+                    level,
+                    node.to_str_indented(indent + 1)
+                )
+            }
+            AstNode::Blockquote { lvl, children } => {
+                let mut out = format!("{}Blockquote(lvl={lvl})\n", pad);
+
+                for n in children {
+                    out.push_str(&n.to_str_indented(indent + 1));
+                    out.push('\n');
+                }
+
+                out
+            }
+            AstNode::Paragraph(nodes) => {
+                let mut out = format!("{}Paragraph\n", pad);
+
+                for n in nodes {
+                    out.push_str(&n.to_str_indented(indent + 1));
+                    out.push('\n');
+                }
+
+                out
+            }
+            AstNode::Text(text) => {
+                format!("{}Text({:?})", pad, text)
+            }
+        }
+    }
 }
 
 pub struct Parser {
@@ -130,7 +204,7 @@ impl Parser {
         }
         self.tokens.get(self.pos).cloned()
     }
-    
+
     fn advance(&mut self) {
         if self.pos < self.tokens.len() {
             self.pos += 1;
@@ -142,11 +216,16 @@ impl Parser {
 
         while self.peek() != Some(&Token::Eof) {
             match self.peek() {
-                Some(Token::Blockquote) => {
+                Some(Token::Blockquote(lvl)) => {
+                    let level = *lvl;
                     self.advance();
-                    let bq_nodes = self.parse_blockquote();
+                    // Pass expected level so we can isolate different blockquotes properly
+                    let bq_nodes = self.parse_blockquote(level);
                     if !bq_nodes.is_empty() {
-                        nodes.push(AstNode::Blockquote(bq_nodes));
+                        nodes.push(AstNode::Blockquote {
+                            lvl: level,
+                            children: bq_nodes,
+                        });
                     }
                 }
                 Some(Token::Heading(level)) => {
@@ -176,12 +255,16 @@ impl Parser {
         }
     }
 
-    fn parse_blockquote(&mut self) -> Vec<AstNode> {
+    fn parse_blockquote(&mut self, current_level: u8) -> Vec<AstNode> {
         let mut nodes = Vec::new();
 
         while self.peek() != Some(&Token::Eof) {
             match self.peek() {
-                Some(Token::Blockquote) => {
+                Some(Token::Blockquote(lvl)) => {
+                    // If the nested level differentiates, break the blockquote container!
+                    if *lvl != current_level {
+                        break;
+                    }
                     self.advance();
                     if let Some(node) = self.parse_inline() {
                         nodes.push(node);
@@ -189,8 +272,13 @@ impl Parser {
                 }
                 Some(Token::Newline) => {
                     self.advance();
-                    if self.peek() == Some(&Token::Blockquote) {
-                        continue;
+                    // Peek at the NEXT token after new line
+                    if let Some(Token::Blockquote(lvl)) = self.peek() {
+                        if *lvl == current_level {
+                            continue;
+                        } else {
+                            break;
+                        }
                     }
                     if self.is_blockquote_end() {
                         break;
@@ -200,6 +288,9 @@ impl Parser {
                     }
                 }
                 _ => {
+                    if self.is_blockquote_end() {
+                        break;
+                    }
                     if let Some(node) = self.parse_inline() {
                         nodes.push(node);
                     }
@@ -217,7 +308,14 @@ impl Parser {
     }
 
     fn is_blockquote_end(&self) -> bool {
-        matches!(self.peek(), Some(Token::Eof) | Some(Token::Heading(_)) | Some(Token::Bold) | Some(Token::Italic) | Some(Token::Strikethrough))
+        matches!(
+            self.peek(),
+            Some(Token::Eof)
+                | Some(Token::Heading(_))
+                | Some(Token::Bold)
+                | Some(Token::Italic)
+                | Some(Token::Strikethrough)
+        )
     }
 
     fn parse_text_line(&mut self) -> String {
@@ -228,7 +326,10 @@ impl Parser {
                 Token::Newline => break,
                 Token::Eof => break,
                 Token::Heading(_) => break,
-                Token::Blockquote => break,
+                Token::Blockquote(lvl) => {
+                    text.push_str(&">".repeat(*lvl as usize));
+                    self.advance();
+                }
                 _ => {
                     if let Token::Text(s) = tok {
                         text.push_str(s);
@@ -268,6 +369,12 @@ impl Parser {
                 }
                 Token::Newline => {
                     break;
+                }
+                Token::Blockquote(lvl) => {
+                    // Escape inline blockquote tokens that slip in (E.g. parsing `> >`)
+                    let l = *lvl;
+                    self.advance();
+                    nodes.push(AstNode::Text(">".repeat(l as usize)));
                 }
                 _ => {
                     self.advance();
@@ -311,6 +418,11 @@ impl Parser {
                 }
                 Token::Text(s) => {
                     text.push_str(s);
+                    self.advance();
+                }
+                Token::Blockquote(lvl) => {
+                    // Make sure they act as escaped characters inside formatted tags
+                    text.push_str(&">".repeat(*lvl as usize));
                     self.advance();
                 }
                 _ => {

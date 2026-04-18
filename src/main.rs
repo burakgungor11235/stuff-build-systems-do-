@@ -3,19 +3,24 @@ use std::fs::write;
 mod markup;
 
 fn main() {
-    let input = r#"#1 Hello World
+    let input = r#"
 
-This is *bold* and _italic_ and ~strikethrough~ text.
+#1 Test Document
+> something
+>> something something
+> > something else
 
-> This is a blockquote
-> with multiple lines
+Some normal text with *bold*, _italic_, and ~strikethrough~.
 
-#2 Second Heading
+>>> Triple blockquote!
+>> Back to double
+> And back to single
 
-More text here.
+> Blockquote with *bold text* inside!
 "#;
 
     let html = markup::render(input);
     println!("{}", html);
+    println!("{input}");
     write("out.html", html).expect("lololol");
 }

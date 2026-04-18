@@ -17,37 +17,46 @@ impl Assembler {
 
     fn node_to_html(&self, node: &AstNode) -> String {
         match node {
-            AstNode::Text(s) => {
-                self.escape_html(s)
-            },
+            AstNode::Text(s) => self.escape_html(s),
             AstNode::Bold(n) => {
                 format!("<strong>{}</strong>", self.node_to_html(n))
-            },
+            }
             AstNode::Italic(n) => {
                 format!("<em>{}</em>", self.node_to_html(n))
-            },
+            }
             AstNode::Strikethrough(n) => {
                 format!("<del>{}</del>", self.node_to_html(n))
-            },
+            }
             AstNode::Heading(level, n) => {
                 format!("<h{}>{}</h{}>\n", level, self.node_to_html(n), level)
             }
-            AstNode::Blockquote(nodes) => {
-                let mut html = String::from("<blockquote>\n");
+            AstNode::Blockquote {
+                children: nodes,
+                lvl,
+            } => {
+                // could be a lot optimized, but eeh.
+                let mut html = String::new();
+                let levels = *lvl as usize;
+
+                for _ in 0..levels {
+                    html.push_str("<blockquote>\n");
+                }
+
                 for n in nodes {
                     html.push_str(&self.node_to_html(n));
                 }
-                html.push_str("</blockquote>\n");
+
+                for _ in 0..levels {
+                    html.push_str("</blockquote>\n");
+                }
+
                 html
             }
             AstNode::Paragraph(nodes) => {
                 if nodes.is_empty() {
                     String::new()
                 } else {
-                    let inner: String = nodes
-                        .iter()
-                        .map(|n| self.node_to_html(n))
-                        .collect();
+                    let inner: String = nodes.iter().map(|n| self.node_to_html(n)).collect();
                     if inner.trim().is_empty() {
                         String::new()
                     } else {
@@ -58,7 +67,7 @@ impl Assembler {
         }
     }
 
-    // hmm juicy injections mitigated :D 
+    // hmm juicy injections mitigated :D
     fn escape_html(&self, s: &str) -> String {
         s.replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -68,6 +77,5 @@ impl Assembler {
 }
 
 pub fn to_html(nodes: &[AstNode]) -> String {
-
     Assembler::new().assemble(nodes)
 }
