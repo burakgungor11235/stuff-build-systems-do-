@@ -99,14 +99,40 @@ impl Lexer {
                 }
             }
             '>' => {
-                let mut level = 0;
+                let mut level: u8 = 0;
 
-                while self.peek() == Some('>') {
-                    self.advance();
-                    level += 1;
+                while self.pos < self.input.len() {
+                    let ch = self.input[self.pos];
+                    if ch == '>' {
+                        level += 1;
+                        self.pos += 1;
+                    } else if ch == ' ' {
+                        // Look ahead to see if there is another '>' after the spaces
+                        let mut next_is_gt = false;
+                        let mut temp_pos = self.pos;
+                        while temp_pos < self.input.len() {
+                            if self.input[temp_pos] == ' ' {
+                                temp_pos += 1;
+                            } else if self.input[temp_pos] == '>' {
+                                next_is_gt = true;
+                                break;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        if next_is_gt {
+                            self.pos = temp_pos;
+                        } else {
+                           self.pos += 1;
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
                 }
 
-                Token::Blockquote(level.min(6) as u8) 
+                Token::Blockquote(level.min(6) as u8)
             }
             '\n' => {
                 self.advance();
@@ -212,85 +238,129 @@ impl Parser {
     }
 
     pub fn parse(&mut self) -> Vec<AstNode> {
-        let mut nodes = Vec::new();
+        let mut blocks = Vec::new();
+        let mut current_paragraph = Vec::new();
 
-        while self.peek() != Some(&Token::Eof) {
-            match self.peek() {
-                Some(Token::Blockquote(lvl)) => {
-                    let level = *lvl;
+        // Helper to commit accumulated inline text into a clean paragraph block
+        let commit_paragraph = |p: &mut Vec<AstNode>, b: &mut Vec<AstNode>| {
+            if !p.is_empty() {
+                // Trim trailing newlines before committing
+                while let Some(AstNode::Text(t)) = p.last() {
+                    if t == "\n" {
+                        p.pop();
+                    } else {
+                        break;
+                    }
+                }
+                if !p.is_empty() {
+                    b.push(AstNode::Paragraph(std::mem::take(p)));
+                } else {
+                    p.clear();
+                }
+            }
+        };
+
+        while let Some(tok) = self.peek().cloned() {
+            if tok == Token::Eof {
+                break;
+            }
+
+            match tok {
+                Token::Blockquote(lvl) => {
+                    commit_paragraph(&mut current_paragraph, &mut blocks);
                     self.advance();
-                    // Pass expected level so we can isolate different blockquotes properly
-                    let bq_nodes = self.parse_blockquote(level);
+                    let bq_nodes = self.parse_blockquote(lvl);
                     if !bq_nodes.is_empty() {
-                        nodes.push(AstNode::Blockquote {
-                            lvl: level,
+                        blocks.push(AstNode::Blockquote {
+                            lvl,
                             children: bq_nodes,
                         });
                     }
                 }
-                Some(Token::Heading(level)) => {
-                    let lvl = *level;
+                Token::Heading(lvl) => {
+                    commit_paragraph(&mut current_paragraph, &mut blocks);
                     self.advance();
                     self.skip_newlines();
                     let text = self.parse_text_line();
                     if !text.is_empty() {
-                        nodes.push(AstNode::Heading(lvl, Box::new(AstNode::Text(text))));
+                        // Optional trim to ensure headings are clean
+                        blocks.push(AstNode::Heading(
+                            lvl,
+                            Box::new(AstNode::Text(text.trim().to_string())),
+                        ));
                     }
                 }
-                Some(Token::Newline) => {
+                Token::Newline => {
                     self.advance();
+                    if self.peek() == Some(&Token::Newline) {
+                        // Double newline commits the paragraph and resets
+                        commit_paragraph(&mut current_paragraph, &mut blocks);
+                        self.skip_newlines();
+                    } else {
+                        // Single newline inside a paragraph is treated as whitespace
+                        current_paragraph.push(AstNode::Text("\n".to_string()));
+                    }
                 }
                 _ => {
                     if let Some(node) = self.parse_inline() {
-                        nodes.push(node);
+                        current_paragraph.push(node);
                     }
                 }
             }
         }
 
-        if nodes.is_empty() {
-            nodes
-        } else {
-            vec![AstNode::Paragraph(nodes)]
-        }
+        commit_paragraph(&mut current_paragraph, &mut blocks);
+        blocks
     }
 
+    // I would just like to say that I have blockquotes with a passion.
+    // No implementation of mine ever works first try.
+    // They are still cool tho. 
     fn parse_blockquote(&mut self, current_level: u8) -> Vec<AstNode> {
         let mut nodes = Vec::new();
 
-        while self.peek() != Some(&Token::Eof) {
-            match self.peek() {
-                Some(Token::Blockquote(lvl)) => {
-                    // If the nested level differentiates, break the blockquote container!
-                    if *lvl != current_level {
+        while let Some(tok) = self.peek().cloned() {
+            if tok == Token::Eof {
+                break;
+            }
+
+            match tok {
+                Token::Blockquote(lvl) => {
+                    if lvl < current_level {
+                        // Hand back to outer layer
                         break;
-                    }
-                    self.advance();
-                    if let Some(node) = self.parse_inline() {
-                        nodes.push(node);
+                    } else if lvl > current_level {
+                        // Greedily capture nested blockquotes
+                        self.advance();
+                        let nested = self.parse_blockquote(lvl);
+                        nodes.push(AstNode::Blockquote {
+                            lvl: lvl - current_level,
+                            children: nested,
+                        });
+                    } else {
+                        // Normal continuation
+                        self.advance();
                     }
                 }
-                Some(Token::Newline) => {
+                Token::Newline => {
                     self.advance();
-                    // Peek at the NEXT token after new line
-                    if let Some(Token::Blockquote(lvl)) = self.peek() {
-                        if *lvl == current_level {
-                            continue;
-                        } else {
+
+                    // Double newline forces complete escape from blockquotes
+                    if self.peek() == Some(&Token::Newline) {
+                        break;
+                    }
+
+                    if let Some(Token::Blockquote(lvl)) = self.peek().cloned() {
+                        if lvl < current_level {
                             break;
                         }
+                        continue;
                     }
-                    if self.is_blockquote_end() {
-                        break;
-                    }
-                    if let Some(node) = self.parse_inline() {
-                        nodes.push(node);
-                    }
+
+                    // Lazy continuation for standard text on a new line
+                    nodes.push(AstNode::Text("\n".to_string()));
                 }
                 _ => {
-                    if self.is_blockquote_end() {
-                        break;
-                    }
                     if let Some(node) = self.parse_inline() {
                         nodes.push(node);
                     }
@@ -305,17 +375,6 @@ impl Parser {
         while self.peek() == Some(&Token::Newline) {
             self.advance();
         }
-    }
-
-    fn is_blockquote_end(&self) -> bool {
-        matches!(
-            self.peek(),
-            Some(Token::Eof)
-                | Some(Token::Heading(_))
-                | Some(Token::Bold)
-                | Some(Token::Italic)
-                | Some(Token::Strikethrough)
-        )
     }
 
     fn parse_text_line(&mut self) -> String {

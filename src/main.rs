@@ -6,6 +6,7 @@ fn main() {
     let input = r#"
 
 #1 Test Document
+
 > something
 >> something something
 > > something else
