@@ -1,0 +1,5 @@
+[project]
+name = "simple example"
+src_dir = "."
+out_dir = "./out/"
+cache_dir = ".cache"

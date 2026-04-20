@@ -1,27 +1,26 @@
-use std::fs::write;
-
+mod bs;
 mod markup;
 
-fn main() {
-    let input = r#"
+use std::fs;
 
-#1 Test Document
+use anyhow::Result;
 
-> something
->> something something
-> > something else
+use crate::bs::{ builder::Builder, config::Manifest};
 
-Some normal text with *bold*, _italic_, and ~strikethrough~.
-
->>> Triple blockquote!
->> Back to double
-> And back to single
-
-> Blockquote with *bold text* inside!
-"#;
-
-    let html = markup::render(input);
-    println!("{}", html);
-    println!("{input}");
-    write("out.html", html).expect("lololol");
+fn main() -> Result<()> {
+    // Load the manifest from stuff.toml
+    let manifest = match Manifest::load("test_envs/basic/stuff.toml") {
+        Ok(o) => {o},
+        Err(e) => {
+            let s = fs::read_to_string("test_envs/basic/stuff.toml").unwrap(); 
+            println!("{}", s);
+            return Err(e);
+        },
+    };
+    
+    // Create a builder and run the build
+    let mut builder = Builder::new(manifest)?;
+    builder.build()?;
+    
+    Ok(())
 }

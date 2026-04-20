@@ -1,4 +1,4 @@
 # Rust build output
 /target/
-
+*/.cache/*
 Cargo.lock
