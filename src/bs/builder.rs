@@ -1,4 +1,4 @@
-use crate::bs::cache::BuildCache;
+use crate::bs::cache::{BuildCache, CacheStatus};
 use crate::markup::render;
 use std::fs;
 use tracing::{debug, info, warn};
@@ -39,7 +39,7 @@ impl Builder {
             processed += 1;
             debug!(file = %rel_path.display(), "Checking file");
 
-            if !self.cache.is_fresh(&project.src_dir_path(), src_path) {
+            if self.cache.is_fresh(&project.src_dir_path(), src_path) != CacheStatus::UpToDate {
                 info!(file = %rel_path.display(), "Rebuilding file");
                 rebuilt += 1;
 
