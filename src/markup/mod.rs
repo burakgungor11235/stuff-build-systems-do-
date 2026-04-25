@@ -1,5 +1,6 @@
 pub mod assembler;
 pub mod parser;
+pub mod lexer;
 
 pub use assembler::to_html;
 pub use parser::{parse, AstNode};
