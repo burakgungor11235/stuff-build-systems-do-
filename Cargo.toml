@@ -3,6 +3,9 @@ name = "sbd"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+path = "src/lib.rs"
+
 [dependencies]
 anyhow = "1.0.102"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -13,4 +16,4 @@ tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 walkdir = "2.5.0"
 clap = { version = "4.0", features = ["derive"] }
-notify = "5"
+logos = "0.16.1"

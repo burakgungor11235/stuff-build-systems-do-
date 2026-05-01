@@ -1,0 +1,16 @@
+#1
+@foo(bar)
+&name
+*bold*
+_
+~
+test with spaces
+αβγδ
+日本語
+한국어
+中文
+emoji: 😀🎉
+combining: a⃗ b⃗
+rtl: עברית
+zero width: ​
+special: '\x00' '\x01' '\x7f'

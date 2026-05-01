@@ -1,0 +1,7 @@
+@foo()
+@foo(bar)
+@foo(bar,baz)
+@directive(arg1)
+@directive(nested(@inner))
+@a()
+@b(c,d)

@@ -1,0 +1,49 @@
+[package]
+name = "sbd-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+logos = "0.16.1"
+sbd = {path = ".."}
+
+
+[[bin]]
+name = "fuzz_target_1"
+path = "fuzz_targets/fuzz_target_1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lexer_tokens"
+path = "fuzz_targets/lexer_tokens.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parser_fuzz"
+path = "fuzz_targets/parser_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nested_directives"
+path = "fuzz_targets/nested_directives.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "unicode_fuzz"
+path = "fuzz_targets/unicode_fuzz.rs"
+test = false
+doc = false
+bench = false
