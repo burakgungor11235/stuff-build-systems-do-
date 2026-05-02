@@ -1,0 +1,29 @@
+SourceFile      = Chunk*
+Chunk           = ImplicitChunk | ExplicitChunk
+
+ImplicitChunk   = BlockElement IMPLICIT_CHUNK_MARKER?
+                  // the marker is optional; every block is implicitly a chunk
+                  // but only named ones keep the marker token.
+
+ExplicitChunk   = EXPLICIT_CHUNK_START BlockElement* EXPLICIT_CHUNK_END
+
+BlockElement    = Paragraph | Heading | Blockquote
+                | List | HorizontalRule | Directive | Image
+                | Comment
+
+Paragraph       = InlineElement+ NEWLINE
+                  // (or end of file; whitespace/newlines are part of the tree)
+
+Heading         = HEADING_MARKER InlineElement+ NEWLINE
+Blockquote      = BLOCKQUOTE_PREFIX BlockElement*
+List            = ListItem+
+ListItem        = (OrderedMarker | UnorderedMarker) InlineElement+ NEWLINE
+                  // (nesting handled by indentation tokens)
+
+HorizontalRule  = HR_MARKER NEWLINE
+Image           = IMAGE_START TEXT PIPE TEXT RBRACKET  // simplified
+Directive       = DIRECTIVE_START DIRECTIVE_BODY DIRECTIVE_END
+                | SIMPLE_DIRECTIVE
+
+InlineElement   = BOLD | ITALIC | STRIKETHROUGH | REFERENCE
+                | TEXT | DIGITS | ... (all inline tokens)

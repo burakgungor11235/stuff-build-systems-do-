@@ -1,5 +1,5 @@
+/*
 use crate::bs::cache::{BuildCache, CacheStatus};
-use crate::markup::render;
 use std::fs;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
@@ -70,3 +70,4 @@ impl Builder {
         Ok(())
     }
 }
+*/
