@@ -5,15 +5,10 @@ use logos::Logos;
 
 fuzz_target!(|data: &[u8]| {
     let input = String::from_utf8_lossy(data);
-    let mut lexer = Token::lexer(&input);
+    let lexer = Token::lexer(&input);
     let mut tokens = Vec::new();
 
-    while let Some(result) = lexer.next() {
-        match result {
-            Ok(token) => tokens.push(token),
-            Err(_) => {}
-        }
-    }
+    for token in lexer.flatten() { tokens.push(token) }
 
     for token in &tokens {
         match token {
