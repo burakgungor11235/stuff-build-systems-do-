@@ -292,10 +292,8 @@ impl<'a> Parser<'a> {
     fn token_to_text(&mut self) -> String {
         let tok = self.tokens.next().expect("expected token");
         match tok {
-            // Tokens that carry a string
             Token::Text(s) | Token::Whitespace(s) | Token::Digits(s) => s,
-
-            // All other tokens: use the raw lexeme slice just consumed
+            Token::Escape(esc) => esc[1..].to_string(), // strip the leading backslash
             _ => self.tokens.last_slice().to_string(),
         }
     }
