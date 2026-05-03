@@ -1,10 +1,11 @@
-/*
 use crate::bs::cache::{BuildCache, CacheStatus};
 use std::fs;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
 use crate::bs::config::Manifest;
+use crate::markup::assembler::render_to_html;
+use crate::markup::parser::parse;
 
 pub struct Builder {
     manifest: Manifest,
@@ -26,15 +27,19 @@ impl Builder {
 
         let mut processed = 0;
         let mut rebuilt = 0;
+        fn fun_name(e: &walkdir::DirEntry) -> bool {
+            e.path()
+                .extension()
+                .map_or_else(|| false, |ext| ext == "stuff")
+        }
 
-        for entry in WalkDir::new(project.src_dir_path())
+        let tmp = WalkDir::new(project.src_dir_path())
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map_or_else(|| false, |ext| ext == "md"))
-        {
+            .filter(fun_name);
+        for entry in tmp {
             let src_path = entry.path();
-            let rel_path = src_path.strip_prefix(project.src_dir_path())
-                .expect("Failed to strip prefix");
+            let rel_path = src_path.strip_prefix(project.src_dir_path())?;
 
             processed += 1;
             debug!(file = %rel_path.display(), "Checking file");
@@ -44,7 +49,8 @@ impl Builder {
                 rebuilt += 1;
 
                 let content = fs::read_to_string(src_path)?;
-                let html = render(&content);
+                let doc = parse(&content);
+                let html = render_to_html(&doc);
 
                 let mut out_path = project.out_dir_path().join(rel_path);
                 out_path.set_extension("html");
@@ -53,11 +59,7 @@ impl Builder {
                     fs::create_dir_all(parent)?;
                 }
 
-                if let Err(e) = fs::write(&out_path, html) {
-                    warn!(file = %rel_path.display(), error = %e, "Failed to write output");
-                    return Err(e.into());
-                }
-
+                fs::write(&out_path, html)?;
                 self.cache.update(&project.src_dir_path(), src_path);
             } else {
                 debug!(file = %rel_path.display(), "File up to date");
@@ -66,8 +68,7 @@ impl Builder {
 
         self.cache.save(project.cache_dir_path())?;
         info!(processed, rebuilt, "Build complete");
-
         Ok(())
     }
 }
-*/
+

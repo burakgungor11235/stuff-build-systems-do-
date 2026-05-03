@@ -10,6 +10,6 @@ Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu 
 
 Here we have *bold* mixed with _italic_ and even ~strikethrough~ combined in one place.
 
-> > > Triple nested blockquote with text inside that also has *bold* formatting
+>>> Triple nested blockquote with text inside that also has *bold* formatting
 
 Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.

@@ -1,0 +1,86 @@
+/'  Full .stuff Syntax Showcase  '/
+/'  ===========================  '/
+
+#1 Introduction
+
+This paragraph shows *bold* and _italic_ and ~strikethrough~.  
+You can also escape special characters: \* \_ \~ \@ \& \\.
+
+#2 Nested Blockquotes
+
+> Level 1 blockquote with *bold* and _italic_.
+>> Level 2 nested blockquote with ~strikethrough~.
+>>> Level 3 nested with a reference to the next chunk: &+1
+
+--- /' Horizontal rule separates sections '/
+
+Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.
+
+#3 More Formatting
+
+Here we have *bold* mixed with _italic_ and even ~strikethrough~ combined in one place.
+
+>>> Triple nested blockquote with text inside that also has *bold* formatting
+
+Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+
+:>(my_quote_chunk)  /' give the previous blockquote a name '/
+
+---
+/' Lists '/
+---
+- Unordered item one
+- Unordered item two with *bold*
+  - Nested unordered item (indentation is not strict, but still a list item)
+- Unordered item three
+
+1. First ordered item
+2. Second ordered item
+3. Third ordered item with _italic_
+
+---
+/' Images '/
+---
+![ Alt text with _italic_ | https://example.com/logo.png ]
+
+![| /local/image.jpg]  /' no alt text '/
+
+---
+/' Directives '/
+---
+
+@simple_directive    /' no arguments '/
+@plugin(arg1, &my_quote_chunk)   /' passes a named chunk '/
+@toc(&-1, &+1)   /' passes previous and next chunks '/
+
+---
+/' Chunks '/
+---
+
+This is an anonymous implicit chunk.
+
+This is another implicit chunk, which will be named. :>(my_named_chunk)
+
+:<
+This is an explicit chunk.
+It can contain multiple blocks, like this paragraph and the next heading.
+
+#4 Inside Explicit Chunk
+
+And a list inside the explicit chunk:
+- item a
+- item b
+
+>:(inside_explicit)   /' end of explicit chunk '/
+
+---
+/' References in text '/
+---
+You can refer to the previous chunk with &-1, the next with &+1, or a named one like &my_named_chunk.
+
+---
+/' Escaping '/
+---
+Literal characters: \@ is not a directive, \* is not bold, \& is not a reference.
+
+/' End of showcase '/

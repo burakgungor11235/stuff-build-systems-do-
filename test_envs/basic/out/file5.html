@@ -1,0 +1,48 @@
+<h1> Introduction</h1>
+<p>This paragraph shows <strong>bold</strong> and <em>italic</em> and <del>strikethrough</del>.  </p>
+<p>You can also escape special characters: * _ ~ @ &amp; \.</p>
+<h2> Nested Blockquotes</h2>
+<blockquote> Level 1 blockquote with <strong>bold</strong> and <em>italic</em>.</blockquote>
+<blockquote> Level 2 nested blockquote with <del>strikethrough</del>.</blockquote>
+<blockquote> Level 3 nested with a reference to the next chunk: <!-- ref:+1 --></blockquote>
+<hr>
+<p>Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.</p>
+<h3> More Formatting</h3>
+<p>Here we have <strong>bold</strong> mixed with <em>italic</em> and even <del>strikethrough</del> combined in one place.</p>
+<blockquote> Triple nested blockquote with text inside that also has <strong>bold</strong> formatting</blockquote>
+<p>Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</p>
+<hr>
+<hr>
+<ul>
+<li>Unordered item one</li>
+<li>Unordered item two with <strong>bold</strong></li>
+<li>Nested unordered item (indentation is not strict, but still a list item)</li>
+<li>Unordered item three</li>
+</ul>
+<ol>
+<li>First ordered item</li>
+<li>Second ordered item</li>
+<li>Third ordered item with <em>italic</em></li>
+</ol>
+<hr>
+<hr>
+<img src=" https://example.com/logo.png " alt=" Alt text with <em>italic</em> " /><img src=" /local/image.jpg" alt="" /><hr>
+<hr>
+<hr>
+<hr>
+<p>This is an anonymous implicit chunk.</p>
+<p>This is another implicit chunk, which will be named. </p>
+<p>This is an explicit chunk.</p>
+<p>It can contain multiple blocks, like this paragraph and the next heading.</p>
+<h4> Inside Explicit Chunk</h4>
+<p>And a list inside the explicit chunk:</p>
+<ul>
+<li>item a</li>
+<li>item b</li>
+</ul>
+<hr>
+<hr>
+<p>You can refer to the previous chunk with <!-- ref:-1 -->, the next with <!-- ref:+1 -->, or a named one like <!-- ref:my_named_chunk -->.</p>
+<hr>
+<hr>
+<p>Literal characters: @ is not a directive, * is not bold, &amp; is not a reference.</p>
