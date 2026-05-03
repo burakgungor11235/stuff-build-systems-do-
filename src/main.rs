@@ -1,5 +1,6 @@
 mod bs;
 mod markup;
+mod repl;
 
 use anyhow::Result;
 use bs::clean::Cleaner;
@@ -50,6 +51,8 @@ enum Commands {
         #[arg(short, long, action = clap::ArgAction::Count)]
         verbose: u8,
     },
+    /// Interactive REPL for debugging markup
+    Repl,
 }
 
 fn setup_logging() -> Result<()> {
@@ -109,6 +112,10 @@ fn main() -> Result<()> {
             let manifest = Manifest::load(&config)?;
             let status = Status::new(manifest);
             status.show(verbose)?;
+            Ok(())
+        }
+        Commands::Repl => {
+            repl::run()?;
             Ok(())
         }
     }
