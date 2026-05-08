@@ -1,4 +1,3 @@
-
 use crate::markup::ast::*;
 
 pub fn render_to_html(doc: &Document) -> String {
@@ -31,8 +30,10 @@ fn render_block(block: &Block) -> String {
             let tag = format!("h{}", level);
             format!("<{tag}>{}</{tag}>\n", render_inlines(content))
         }
-        Block::Blockquote { content, .. } => {
-            format!("<blockquote>{}</blockquote>\n", render_inlines(content))
+        Block::Blockquote { depth, content } => {
+            let open = "<blockquote>".repeat(*depth as usize);
+            let close = "</blockquote>".repeat(*depth as usize);
+            format!("{}{}{}\n", open, render_inlines(content), close)
         }
         Block::HorizontalRule => "<hr>\n".to_string(),
         Block::Image { alt, url } => {

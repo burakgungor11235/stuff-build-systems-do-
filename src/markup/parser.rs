@@ -100,6 +100,7 @@ impl<'a> Parser<'a> {
             Token::BlockquotePrefix => {
                 let depth = self.count_blockquote_prefix();
                 let content = self.parse_inline_until_newline();
+                dbg!("BQprefix: {depth} {:?}", content.clone());
                 Some(Block::Blockquote { depth, content })
             }
             Token::ImageStart => self.parse_image(),
