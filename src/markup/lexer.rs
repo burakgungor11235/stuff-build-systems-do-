@@ -126,9 +126,20 @@ pub enum Token {
 
     /// Matches any single character not caught by the patterns above
     #[regex(
-        r"[^ \t\n@*_\~\[\]|<>^\{\}\(\)/.\+!\-']+",
+        r"[^ \t\n@*_\~\[\]|<>^\{\}\(\)/.\+!\-]+",
         |lex| lex.slice().to_string(),
         priority = 1
     )]
     Text(String),
+}
+
+impl Token {
+   pub fn inline_as_str(&self) -> &str{
+        match self {
+            Token::Star => "*",
+            Token::Underscore => "_",
+            Token::Tilde => "~",
+            _ => unreachable!(),
+        }
+    }
 }

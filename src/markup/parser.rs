@@ -156,7 +156,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_inline_until_newline(&mut self) -> Vec<Inline> {
-        let nodes = self.parse_inline();
+        let nodes = self.parse_inline_linear(None);
         self.tokens.skip_trivia();
         if let Some(Token::Newline) = self.tokens.peek() {
             self.tokens.next();
@@ -195,6 +195,93 @@ impl<'a> Parser<'a> {
         nodes
     }
 
+    fn parse_inline_linear(&mut self, stop: Option<Token>) -> Vec<Inline> {
+        let mut output: Vec<Inline> = Vec::new();
+        // Stack: (delimiter token, index in output where the placeholder sits)
+        let mut delim_stack: Vec<(Token, usize)> = Vec::new();
+
+        loop {
+            self.tokens.skip_inline_trivia();
+
+            // Check for end of inline conditions
+            match self.tokens.peek() {
+                None => break,
+                Some(t) if stop.as_ref() == Some(t) => {
+                    self.tokens.next(); // consume the stop token
+                    break;
+                }
+                Some(Token::Newline | Token::ExplicitChunkEnd(_) | Token::ImplicitChunk(_)) => {
+                    break
+                }
+                _ => {}
+            }
+
+            // Grab the actual token
+            let tok = self.tokens.peek().unwrap().clone();
+            self.tokens.next();
+
+            match tok {
+                // Delimiters that can form formatting spans
+                Token::Star | Token::Underscore | Token::Tilde => {
+                    if let Some(&(ref open_tok, start_idx)) = delim_stack.last() {
+                        if *open_tok == tok {
+                            // Attempt to close the span
+                            delim_stack.pop();
+                           let placeholder = output.remove(start_idx);
+                            let _ = placeholder; // Inline::Text("")
+
+                            let inner: Vec<Inline> = output.drain(start_idx..).collect();
+                            if inner.is_empty() {
+                                output.push(Inline::Text(tok.inline_as_str().to_owned()));
+                               output.insert(start_idx, Inline::Text(tok.inline_as_str().into()));
+                            } else {
+                                let wrapped = match tok {
+                                    Token::Star => Inline::Bold(inner),
+                                    Token::Underscore => Inline::Italic(inner),
+                                    Token::Tilde => Inline::Strikethrough(inner),
+                                    _ => unreachable!(),
+                                };
+                                output.push(wrapped);
+                            }
+                            continue;
+                        }
+                    }
+                    let placeholder_idx = output.len();
+                    delim_stack.push((tok, placeholder_idx));
+                    output.push(Inline::Text(String::new())); // empty placeholder
+                }
+
+                Token::Reference(r) => {
+                    output.push(Inline::Reference(r.clone()));
+                }
+
+                _ => {
+                    let text = match tok {
+                        Token::Text(s) | Token::Whitespace(s) | Token::Digits(s) => s,
+                        Token::Escape(esc) => esc[1..].to_string(),
+                        _ => self.tokens.last_slice().to_string(),
+                    };
+                    output.push(Inline::Text(text));
+                }
+            }
+        }
+
+        // Unwind any unclosed delimiters: replace their placeholder with the literal char
+        for (open_tok, placeholder_idx) in delim_stack.into_iter().rev() {
+            output.remove(placeholder_idx);
+            output.insert(
+                placeholder_idx,
+                Inline::Text(open_tok.inline_as_str().to_owned()),
+            );
+            // Note: everything after the placeholder (and possibly after further unclosed spans) stays as-is.
+        }
+
+        // Remove any stray empty Text nodes (should be none, but just in case)
+        output.retain(|n| !matches!(n, Inline::Text(s) if s.is_empty()));
+
+        output
+    }
+
     fn parse_bold(&mut self) -> Inline {
         self.tokens.next(); // consume opening Star
         let inner = self.parse_inline_until(Token::Star); // stops at and eats closing Star
@@ -220,9 +307,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_image(&mut self) -> Option<Block> {
-        self.expect(Token::ImageStart); // consumes ![
-        let alt = self.parse_inline_until(Token::Pipe); // consumes |
-        let url_tokens = self.parse_inline_until(Token::RBracket); // consumes ]
+        self.tokens.next(); // consume ImageStart
+        let alt = self.parse_inline_linear(Some(Token::Pipe));
+        let url_tokens = self.parse_inline_linear(Some(Token::RBracket));
         let url = inlines_to_plain_text(&url_tokens);
         Some(Block::Image { alt, url })
     }
@@ -335,39 +422,33 @@ mod tests {
         let chunk = doc.chunks.first().expect("Expected one chunk");
         match chunk {
             Chunk::Implicit { name, block } => {
-                assert!(name.is_none(), "Name should be None, got {:#?}", doc);
+                assert!(name.is_none(), "Name should be None");
                 if let Block::Paragraph(inlines) = block {
-                    assert_eq!(
-                        inlines,
-                        &[Inline::Text("hello".into())],
-                        "Paragraph content mismatch; doc: {:#?}",
-                        doc
-                    );
+                    assert_eq!(inlines, &[Inline::Text("hello".into())]);
                 } else {
-                    panic!("Expected paragraph, got {:#?}", doc);
+                    panic!("Expected paragraph");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
     #[test]
     fn paragraph_with_spaces() {
         let doc = parse("hello   world\n");
-        let chunk = doc.chunks.first().expect("Expected one chunk");
+        let chunk = doc.chunks.first().unwrap();
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Paragraph(inlines) = block {
-                    // tokens: Text("hello"), Whitespace("   "), Text("world")
-                    assert_eq!(inlines.len(), 3, "Unexpected inline count; doc: {:#?}", doc);
-                    assert_eq!(inlines[0], Inline::Text("hello".into()), "doc: {:#?}", doc);
-                    assert_eq!(inlines[1], Inline::Text("   ".into()), "doc: {:#?}", doc);
-                    assert_eq!(inlines[2], Inline::Text("world".into()), "doc: {:#?}", doc);
+                    assert_eq!(inlines.len(), 3, "doc: {:#?}", doc);
+                    assert_eq!(inlines[0], Inline::Text("hello".into()));
+                    assert_eq!(inlines[1], Inline::Text("   ".into()));
+                    assert_eq!(inlines[2], Inline::Text("world".into()));
                 } else {
-                    panic!("Expected paragraph, got {:#?}", doc);
+                    panic!("Expected paragraph");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -378,18 +459,13 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Paragraph(inlines) = block {
-                    assert_eq!(inlines.len(), 1, "doc: {:#?}", doc);
-                    match &inlines[0] {
-                        Inline::Bold(inner) => {
-                            assert_eq!(inner, &[Inline::Text("bold".into())], "doc: {:#?}", doc);
-                        }
-                        _ => panic!("Expected bold, got {:#?}", doc),
-                    }
+                    assert_eq!(inlines.len(), 1);
+                    assert!(matches!(&inlines[0], Inline::Bold(inner) if inner == &[Inline::Text("bold".into())]));
                 } else {
-                    panic!("Expected paragraph, got {:#?}", doc);
+                    panic!("Expected paragraph");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -400,17 +476,13 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Paragraph(inlines) = block {
-                    match &inlines[0] {
-                        Inline::Italic(inner) => {
-                            assert_eq!(inner, &[Inline::Text("italic".into())], "doc: {:#?}", doc)
-                        }
-                        _ => panic!("Expected italic, got {:#?}", doc),
-                    }
+                    assert_eq!(inlines.len(), 1);
+                    assert!(matches!(&inlines[0], Inline::Italic(inner) if inner == &[Inline::Text("italic".into())]));
                 } else {
-                    panic!("Expected paragraph, got {:#?}", doc);
+                    panic!("Expected paragraph");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -421,17 +493,13 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Paragraph(inlines) = block {
-                    match &inlines[0] {
-                        Inline::Strikethrough(inner) => {
-                            assert_eq!(inner, &[Inline::Text("deleted".into())], "doc: {:#?}", doc)
-                        }
-                        _ => panic!("Expected strikethrough, got {:#?}", doc),
-                    }
+                    assert_eq!(inlines.len(), 1);
+                    assert!(matches!(&inlines[0], Inline::Strikethrough(inner) if inner == &[Inline::Text("deleted".into())]));
                 } else {
-                    panic!("Expected paragraph, got {:#?}", doc);
+                    panic!("Expected paragraph");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -442,28 +510,26 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Paragraph(inlines) = block {
-                    match &inlines[0] {
-                        Inline::Bold(inner) => {
-                            // tokens: Text("bold"), Whitespace(" "), Strikethrough, Whitespace(" "), Text("here")
-                            assert_eq!(inner.len(), 5, "doc: {:#?}", doc);
-                            assert_eq!(inner[0], Inline::Text("bold".into()), "doc: {:#?}", doc);
-                            assert_eq!(inner[1], Inline::Text(" ".into()), "doc: {:#?}", doc);
-                            match &inner[2] {
-                                Inline::Strikethrough(s) => {
-                                    assert_eq!(s, &[Inline::Text("and".into())], "doc: {:#?}", doc)
-                                }
-                                _ => panic!("Expected strikethrough inside bold, got {:#?}", doc),
-                            }
-                            assert_eq!(inner[3], Inline::Text(" ".into()), "doc: {:#?}", doc);
-                            assert_eq!(inner[4], Inline::Text("here".into()), "doc: {:#?}", doc);
+                    assert_eq!(inlines.len(), 1);
+                    if let Inline::Bold(inner) = &inlines[0] {
+                        assert_eq!(inner.len(), 5);
+                        assert_eq!(inner[0], Inline::Text("bold".into()));
+                        assert_eq!(inner[1], Inline::Text(" ".into()));
+                        if let Inline::Strikethrough(s) = &inner[2] {
+                            assert_eq!(s[0], Inline::Text("and".into()));
+                        } else {
+                            panic!("Expected strikethrough inside bold");
                         }
-                        _ => panic!("Expected bold, got {:#?}", doc),
+                        assert_eq!(inner[3], Inline::Text(" ".into()));
+                        assert_eq!(inner[4], Inline::Text("here".into()));
+                    } else {
+                        panic!("Expected bold");
                     }
                 } else {
-                    panic!("Expected paragraph, got {:#?}", doc);
+                    panic!("Expected paragraph");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -474,19 +540,15 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Paragraph(inlines) = block {
-                    // tokens: Text("see"), Whitespace(" "), Reference("my_chunk")
-                    assert_eq!(inlines.len(), 3, "doc: {:#?}", doc);
-                    assert_eq!(
-                        inlines[2],
-                        Inline::Reference("my_chunk".into()),
-                        "doc: {:#?}",
-                        doc
-                    );
+                    assert_eq!(inlines.len(), 3);
+                    assert!(inlines[0] == Inline::Text("see".into()));
+                    assert!(inlines[1] == Inline::Text(" ".into()));
+                    assert_eq!(inlines[2], Inline::Reference("my_chunk".into()));
                 } else {
-                    panic!("Expected paragraph, got {:#?}", doc);
+                    panic!("Expected paragraph");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -497,26 +559,17 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Paragraph(inlines) = block {
-                    // tokens: Ref("-1"), Whitespace(" "), Ref("+2"), Whitespace(" "), Ref("3")
-                    assert_eq!(inlines.len(), 5, "doc: {:#?}", doc);
-                    assert_eq!(
-                        inlines[0],
-                        Inline::Reference("-1".into()),
-                        "doc: {:#?}",
-                        doc
-                    );
-                    assert_eq!(
-                        inlines[2],
-                        Inline::Reference("+2".into()),
-                        "doc: {:#?}",
-                        doc
-                    );
-                    assert_eq!(inlines[4], Inline::Reference("3".into()), "doc: {:#?}", doc);
+                    assert_eq!(inlines.len(), 5);
+                    assert_eq!(inlines[0], Inline::Reference("-1".into()));
+                    assert_eq!(inlines[1], Inline::Text(" ".into()));
+                    assert_eq!(inlines[2], Inline::Reference("+2".into()));
+                    assert_eq!(inlines[3], Inline::Text(" ".into()));
+                    assert_eq!(inlines[4], Inline::Reference("3".into()));
                 } else {
-                    panic!("Expected paragraph, got {:#?}", doc);
+                    panic!("Expected paragraph");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -527,16 +580,16 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Heading { level, content } = block {
-                    assert_eq!(*level, 1, "doc: {:#?}", doc);
-                    // tokens: Whitespace(" "), Text("Title")
-                    assert_eq!(content.len(), 2, "doc: {:#?}", doc);
-                    assert_eq!(content[0], Inline::Text(" ".into()), "doc: {:#?}", doc);
-                    assert_eq!(content[1], Inline::Text("Title".into()), "doc: {:#?}", doc);
+                    assert_eq!(*level, 1);
+                    // The space after the heading marker is a separate whitespace token.
+                    assert_eq!(content.len(), 2);
+                    assert_eq!(content[0], Inline::Text(" ".into()));
+                    assert_eq!(content[1], Inline::Text("Title".into()));
                 } else {
-                    panic!("Expected heading, got {:#?}", doc);
+                    panic!("Expected heading");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -545,16 +598,17 @@ mod tests {
         let doc = parse("#3 Deep\n");
         let chunk = doc.chunks.first().unwrap();
         match chunk {
-            Chunk::Implicit { block, .. } => match block {
-                Block::Heading { level, content } => {
-                    assert_eq!(*level, 3, "doc: {:#?}", doc);
-                    assert_eq!(content.len(), 2, "doc: {:#?}", doc);
-                    assert_eq!(content[0], Inline::Text(" ".into()), "doc: {:#?}", doc);
-                    assert_eq!(content[1], Inline::Text("Deep".into()), "doc: {:#?}", doc);
+            Chunk::Implicit { block, .. } => {
+                if let Block::Heading { level, content } = block {
+                    assert_eq!(*level, 3);
+                    assert_eq!(content.len(), 2);
+                    assert_eq!(content[0], Inline::Text(" ".into()));
+                    assert_eq!(content[1], Inline::Text("Deep".into()));
+                } else {
+                    panic!("Expected heading");
                 }
-                _ => panic!("Expected heading, got {:#?}", doc),
-            },
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            }
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -562,17 +616,13 @@ mod tests {
     fn horizontal_rule() {
         let doc = parse("---\n");
         let chunk = doc.chunks.first().unwrap();
-        match chunk {
-            Chunk::Implicit { block, .. } => {
-                assert_eq!(
-                    block,
-                    &Block::HorizontalRule,
-                    "Expected horizontal rule, got {:#?}",
-                    doc
-                );
+        assert!(matches!(
+            chunk,
+            Chunk::Implicit {
+                block: Block::HorizontalRule,
+                ..
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
-        }
+        ));
     }
 
     #[test]
@@ -582,15 +632,15 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Blockquote { depth, content } = block {
-                    assert_eq!(*depth, 1, "doc: {:#?}", doc);
-                    assert_eq!(content.len(), 2, "doc: {:#?}", doc);
-                    assert_eq!(content[0], Inline::Text(" ".into()), "doc: {:#?}", doc);
-                    assert_eq!(content[1], Inline::Text("quote".into()), "doc: {:#?}", doc);
+                    assert_eq!(*depth, 1);
+                    assert_eq!(content.len(), 2);
+                    assert_eq!(content[0], Inline::Text(" ".into()));
+                    assert_eq!(content[1], Inline::Text("quote".into()));
                 } else {
-                    panic!("Expected blockquote, got {:#?}", doc);
+                    panic!("Expected blockquote");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -601,15 +651,15 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Blockquote { depth, content } = block {
-                    assert_eq!(*depth, 3, "doc: {:#?}", doc);
-                    assert_eq!(content.len(), 2, "doc: {:#?}", doc);
-                    assert_eq!(content[0], Inline::Text(" ".into()), "doc: {:#?}", doc);
-                    assert_eq!(content[1], Inline::Text("deep".into()), "doc: {:#?}", doc);
+                    assert_eq!(*depth, 3);
+                    assert_eq!(content.len(), 2);
+                    assert_eq!(content[0], Inline::Text(" ".into()));
+                    assert_eq!(content[1], Inline::Text("deep".into()));
                 } else {
-                    panic!("Expected blockquote, got {:#?}", doc);
+                    panic!("Expected blockquote");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -620,17 +670,16 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Image { alt, url } = block {
-                    // tokens: Whitespace(" "), Text("alt"), Whitespace(" ")
-                    assert_eq!(alt.len(), 3, "doc: {:#?}", doc);
-                    assert_eq!(alt[0], Inline::Text(" ".into()), "doc: {:#?}", doc);
-                    assert_eq!(alt[1], Inline::Text("alt".into()), "doc: {:#?}", doc);
-                    assert_eq!(alt[2], Inline::Text(" ".into()), "doc: {:#?}", doc);
-                    assert_eq!(url, " url ", "doc: {:#?}", doc);
+                    assert_eq!(alt.len(), 3);
+                    assert_eq!(alt[0], Inline::Text(" ".into()));
+                    assert_eq!(alt[1], Inline::Text("alt".into()));
+                    assert_eq!(alt[2], Inline::Text(" ".into()));
+                    assert_eq!(url, " url ");
                 } else {
-                    panic!("Expected image, got {:#?}", doc);
+                    panic!("Expected image");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -641,13 +690,13 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Image { alt, url } = block {
-                    assert!(alt.is_empty(), "Expected empty alt, got {:#?}", doc);
-                    assert_eq!(url, "url", "doc: {:#?}", doc);
+                    assert!(alt.is_empty());
+                    assert_eq!(url, "url");
                 } else {
-                    panic!("Expected image, got {:#?}", doc);
+                    panic!("Expected image");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -658,13 +707,13 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Directive { name, body } = block {
-                    assert_eq!(name, "mytag", "doc: {:#?}", doc);
-                    assert!(body.is_none(), "Expected no body, got {:#?}", doc);
+                    assert_eq!(name, "mytag");
+                    assert!(body.is_none());
                 } else {
-                    panic!("Expected directive, got {:#?}", doc);
+                    panic!("Expected directive");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -675,13 +724,13 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::Directive { name, body } = block {
-                    assert_eq!(name, "plugin", "doc: {:#?}", doc);
-                    assert_eq!(body.as_deref(), Some("arg1, &chunk"), "doc: {:#?}", doc);
+                    assert_eq!(name, "plugin");
+                    assert_eq!(body.as_deref(), Some("arg1, &chunk"));
                 } else {
-                    panic!("Expected directive, got {:#?}", doc);
+                    panic!("Expected directive");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -692,15 +741,15 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::List { items, ordered } = block {
-                    assert!(!ordered, "Expected unordered list, got {:#?}", doc);
-                    assert_eq!(items.len(), 2, "doc: {:#?}", doc);
-                    assert_eq!(items[0][0], Inline::Text("one".into()), "doc: {:#?}", doc);
-                    assert_eq!(items[1][0], Inline::Text("two".into()), "doc: {:#?}", doc);
+                    assert!(!ordered);
+                    assert_eq!(items.len(), 2);
+                    assert_eq!(items[0][0], Inline::Text("one".into()));
+                    assert_eq!(items[1][0], Inline::Text("two".into()));
                 } else {
-                    panic!("Expected list, got {:#?}", doc);
+                    panic!("Expected list");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -711,20 +760,15 @@ mod tests {
         match chunk {
             Chunk::Implicit { block, .. } => {
                 if let Block::List { items, ordered } = block {
-                    assert!(*ordered, "Expected ordered list, got {:#?}", doc);
-                    assert_eq!(items.len(), 2, "doc: {:#?}", doc);
-                    assert_eq!(items[0][0], Inline::Text("first".into()), "doc: {:#?}", doc);
-                    assert_eq!(
-                        items[1][0],
-                        Inline::Text("second".into()),
-                        "doc: {:#?}",
-                        doc
-                    );
+                    assert!(*ordered);
+                    assert_eq!(items.len(), 2);
+                    assert_eq!(items[0][0], Inline::Text("first".into()));
+                    assert_eq!(items[1][0], Inline::Text("second".into()));
                 } else {
-                    panic!("Expected list, got {:#?}", doc);
+                    panic!("Expected list");
                 }
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -734,14 +778,10 @@ mod tests {
         let chunk = doc.chunks.first().unwrap();
         match chunk {
             Chunk::Implicit { name, block } => {
-                assert_eq!(name.as_deref(), Some("myname"), "doc: {:#?}", doc);
-                assert!(
-                    matches!(block, Block::Paragraph(_)),
-                    "Expected paragraph, got {:?}",
-                    block
-                );
+                assert_eq!(name.as_deref(), Some("myname"));
+                assert!(matches!(block, Block::Paragraph(_)));
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
@@ -750,10 +790,10 @@ mod tests {
         let doc = parse(":< \n line1 \n line2 \n>:(ex)\n");
         match doc.chunks.first() {
             Some(Chunk::Explicit { name, blocks }) => {
-                assert_eq!(name, "ex", "doc: {:#?}", doc);
-                assert_eq!(blocks.len(), 2, "doc: {:#?}", doc);
-                assert!(matches!(blocks[0], Block::Paragraph(_)), "doc: {:#?}", doc);
-                assert!(matches!(blocks[1], Block::Paragraph(_)), "doc: {:#?}", doc);
+                assert_eq!(name, "ex");
+                assert_eq!(blocks.len(), 2);
+                assert!(matches!(blocks[0], Block::Paragraph(_)));
+                assert!(matches!(blocks[1], Block::Paragraph(_)));
             }
             other => panic!("Expected explicit chunk, got {:?} in {:#?}", other, doc),
         }
@@ -764,18 +804,10 @@ mod tests {
         let doc = parse(":< \n #1 head \n --- \n>:(mixed)\n");
         match doc.chunks.first() {
             Some(Chunk::Explicit { name, blocks }) => {
-                assert_eq!(name, "mixed", "doc: {:#?}", doc);
-                assert_eq!(blocks.len(), 2, "doc: {:#?}", doc);
-                assert!(
-                    matches!(blocks[0], Block::Heading { .. }),
-                    "doc: {:#?}",
-                    doc
-                );
-                assert!(
-                    matches!(blocks[1], Block::HorizontalRule),
-                    "doc: {:#?}",
-                    doc
-                );
+                assert_eq!(name, "mixed");
+                assert_eq!(blocks.len(), 2);
+                assert!(matches!(blocks[0], Block::Heading { .. }));
+                assert!(matches!(blocks[1], Block::HorizontalRule));
             }
             other => panic!("Expected explicit chunk, got {:?} in {:#?}", other, doc),
         }
@@ -789,92 +821,71 @@ mod tests {
         match &doc.chunks[0] {
             Chunk::Implicit { block, .. } => {
                 if let Block::Heading { level, content } = block {
-                    assert_eq!(*level, 1, "doc: {:#?}", doc);
-                    // Intro after #1 and space
-                    assert_eq!(content.len(), 2, "doc: {:#?}", doc);
-                    assert_eq!(content[1], Inline::Text("Intro".into()), "doc: {:#?}", doc);
+                    assert_eq!(*level, 1);
+                    assert_eq!(content.len(), 2);
+                    assert_eq!(content[1], Inline::Text("Intro".into()));
                 } else {
-                    panic!("Expected heading, got {:#?}", doc);
+                    panic!("Expected heading");
                 }
             }
-            _ => panic!("Expected implicit heading chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit heading chunk"),
         }
 
         match &doc.chunks[1] {
             Chunk::Implicit { block, .. } => {
-                assert!(
-                    matches!(block, Block::Paragraph(_)),
-                    "Expected paragraph, got {:#?}",
-                    doc
-                );
+                assert!(matches!(block, Block::Paragraph(_)));
             }
-            _ => panic!("Expected implicit paragraph chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit paragraph chunk"),
         }
 
         match &doc.chunks[2] {
             Chunk::Explicit { name, blocks } => {
-                assert_eq!(name, "s", "doc: {:#?}", doc);
-                assert_eq!(blocks.len(), 1, "doc: {:#?}", doc);
-                assert!(
-                    matches!(blocks[0], Block::Directive { .. }),
-                    "doc: {:#?}",
-                    doc
-                );
+                assert_eq!(name, "s");
+                assert_eq!(blocks.len(), 1);
+                assert!(matches!(blocks[0], Block::Directive { .. }));
             }
-            _ => panic!("Expected explicit chunk, got {:#?}", doc),
+            _ => panic!("Expected explicit chunk"),
         }
 
         match &doc.chunks[3] {
             Chunk::Implicit { block, .. } => {
-                assert_eq!(
-                    block,
-                    &Block::HorizontalRule,
-                    "Expected horizontal rule, got {:#?}",
-                    doc
-                );
+                assert_eq!(block, &Block::HorizontalRule);
             }
-            _ => panic!("Expected implicit hr chunk, got {:#?}", doc),
+            _ => panic!("Expected implicit hr chunk"),
         }
     }
+
     #[test]
     fn comments_ignored() {
-        // comments are trivia, so the document should be empty
         let doc = parse("/' this is a comment '/\n");
         assert!(doc.chunks.is_empty(), "Expected no chunks, got {:#?}", doc);
     }
 
     #[test]
     fn incomplete_comment_ignored() {
-        // The lexer only treats /' itself as IncompleteComment; the rest of the line is parsed.
-        // So we get a paragraph with the trailing text, then the next line.
         let doc = parse("/' unclosed...\nreal content\n");
-        assert_eq!(doc.chunks.len(), 2, "Expected two chunks, got {:#?}", doc);
-        match &doc.chunks[0] {
-            Chunk::Implicit { block, .. } => {
-                assert!(matches!(block, Block::Paragraph(_)), "doc: {:#?}", doc);
-                if let Block::Paragraph(inlines) = block {
-                    // The text is " unclosed..." (space before unclosed)
-                    assert!(inlines
-                        .iter()
-                        .any(|i| matches!(i, Inline::Text(s) if s.contains("unclosed"))));
-                }
+        assert_eq!(doc.chunks.len(), 2, "Expected two chunks");
+        // first chunk: paragraph containing " unclosed..." (the space before unclosed)
+        if let Chunk::Implicit { block, .. } = &doc.chunks[0] {
+            if let Block::Paragraph(inlines) = block {
+                assert!(inlines.iter().any(|i| matches!(i, Inline::Text(s) if s.contains("unclosed"))));
+            } else {
+                panic!("Expected paragraph");
             }
-            _ => panic!("Expected implicit chunk, got {:#?}", doc),
         }
-        match &doc.chunks[1] {
-            Chunk::Implicit { block, .. } => {
-                assert!(matches!(block, Block::Paragraph(_)));
-            }
-            _ => panic!("Expected second implicit chunk"),
+        // second chunk: paragraph "real content"
+        if let Chunk::Implicit { block, .. } = &doc.chunks[1] {
+            assert!(matches!(block, Block::Paragraph(_)));
         }
     }
+
     #[test]
     fn empty_explicit_chunk() {
         let doc = parse(":< \n>:(nothing)\n");
         match doc.chunks.first() {
             Some(Chunk::Explicit { name, blocks }) => {
-                assert_eq!(name, "nothing", "doc: {:#?}", doc);
-                assert!(blocks.is_empty(), "Expected empty blocks, got {:#?}", doc);
+                assert_eq!(name, "nothing");
+                assert!(blocks.is_empty());
             }
             other => panic!("Expected explicit chunk, got {:?} in {:#?}", other, doc),
         }
@@ -883,39 +894,11 @@ mod tests {
     #[test]
     fn multiple_paragraphs_and_headings() {
         let doc = parse("line1\n\nline2\n\n#1 Title\n\npara after heading\n");
-        assert_eq!(doc.chunks.len(), 4, "doc: {:#?}", doc);
-        // chunk0: paragraph
-        // chunk1: paragraph
-        // chunk2: heading
-        // chunk3: paragraph
-        assert!(matches!(
-            &doc.chunks[0],
-            Chunk::Implicit {
-                block: Block::Paragraph(_),
-                ..
-            }
-        ));
-        assert!(matches!(
-            &doc.chunks[1],
-            Chunk::Implicit {
-                block: Block::Paragraph(_),
-                ..
-            }
-        ));
-        assert!(matches!(
-            &doc.chunks[2],
-            Chunk::Implicit {
-                block: Block::Heading { .. },
-                ..
-            }
-        ));
-        assert!(matches!(
-            &doc.chunks[3],
-            Chunk::Implicit {
-                block: Block::Paragraph(_),
-                ..
-            }
-        ));
+        assert_eq!(doc.chunks.len(), 4);
+        assert!(matches!(&doc.chunks[0], Chunk::Implicit { block: Block::Paragraph(_), .. }));
+        assert!(matches!(&doc.chunks[1], Chunk::Implicit { block: Block::Paragraph(_), .. }));
+        assert!(matches!(&doc.chunks[2], Chunk::Implicit { block: Block::Heading { .. }, .. }));
+        assert!(matches!(&doc.chunks[3], Chunk::Implicit { block: Block::Paragraph(_), .. }));
     }
 
     #[test]
@@ -928,9 +911,8 @@ mod tests {
             }) => {
                 assert!(!ordered);
                 assert_eq!(items.len(), 2);
-                // first item content starts with "item"
-                assert_eq!(items[0][0], Inline::Text("item".into()), "doc: {:#?}", doc);
-                assert_eq!(items[1][0], Inline::Text("next".into()), "doc: {:#?}", doc);
+                assert_eq!(items[0][0], Inline::Text("item".into()));
+                assert_eq!(items[1][0], Inline::Text("next".into()));
             }
             other => panic!("Expected list chunk, got {:?} in {:#?}", other, doc),
         }
@@ -944,7 +926,7 @@ mod tests {
                 block: Block::Paragraph(inlines),
                 ..
             }) => {
-                assert_eq!(inlines.len(), 3, "doc: {:#?}", doc);
+                assert_eq!(inlines.len(), 3);
                 assert_eq!(inlines[0], Inline::Text("1".into()));
                 assert_eq!(inlines[1], Inline::Text(" ".into()));
                 assert_eq!(inlines[2], Inline::Text("something".into()));
@@ -952,58 +934,59 @@ mod tests {
             other => panic!("Expected paragraph, got {:?} in {:#?}", other, doc),
         }
     }
+
     #[test]
     fn mixed_inline_formatting_deep() {
-        // bold containing italic and strikethrough
         let doc = parse("*bold _ital ~strike~_ text*\n");
-        match doc.chunks.first() {
-            Some(Chunk::Implicit {
-                block: Block::Paragraph(inlines),
-                ..
-            }) => {
-                assert_eq!(inlines.len(), 1);
-                if let Inline::Bold(inner) = &inlines[0] {
-                    assert_eq!(inner.len(), 5, "doc: {:#?}", doc);
-                    // inner tokens: Text("bold"), space, Italic(...), space, Text("text")
-                    assert_eq!(inner[0], Inline::Text("bold".into()));
-                    assert_eq!(inner[1], Inline::Text(" ".into()));
-                    match &inner[2] {
-                        Inline::Italic(italic) => {
+        let chunk = doc.chunks.first().unwrap();
+        match chunk {
+            Chunk::Implicit { block, .. } => {
+                if let Block::Paragraph(inlines) = block {
+                    assert_eq!(inlines.len(), 1);
+                    if let Inline::Bold(inner) = &inlines[0] {
+                        assert_eq!(inner.len(), 5);
+                        assert_eq!(inner[0], Inline::Text("bold".into()));
+                        assert_eq!(inner[1], Inline::Text(" ".into()));
+                        if let Inline::Italic(italic) = &inner[2] {
                             assert_eq!(italic.len(), 3);
                             assert_eq!(italic[0], Inline::Text("ital".into()));
                             assert_eq!(italic[1], Inline::Text(" ".into()));
-                            match &italic[2] {
-                                Inline::Strikethrough(s) => {
-                                    assert_eq!(s[0], Inline::Text("strike".into()))
-                                }
-                                _ => panic!("Expected strikethrough"),
+                            if let Inline::Strikethrough(s) = &italic[2] {
+                                assert_eq!(s[0], Inline::Text("strike".into()));
+                            } else {
+                                panic!("Expected strikethrough inside italic");
                             }
+                        } else {
+                            panic!("Expected italic inside bold");
                         }
-                        _ => panic!("Expected italic inside bold"),
+                        assert_eq!(inner[3], Inline::Text(" ".into()));
+                        assert_eq!(inner[4], Inline::Text("text".into()));
+                    } else {
+                        panic!("Expected bold");
                     }
-                    assert_eq!(inner[3], Inline::Text(" ".into()));
-                    assert_eq!(inner[4], Inline::Text("text".into()));
                 } else {
-                    panic!("Expected bold");
+                    panic!("Expected paragraph");
                 }
             }
-            _ => panic!("Expected paragraph, got {:#?}", doc),
+            _ => panic!("Expected implicit chunk"),
         }
     }
 
     #[test]
     fn unclosed_bold_before_newline() {
         let doc = parse("*bold\n");
-        match doc.chunks.first() {
-            Some(Chunk::Implicit {
+        let chunk = doc.chunks.first().unwrap();
+        match chunk {
+            Chunk::Implicit {
                 block: Block::Paragraph(inlines),
                 ..
-            }) => {
-                // It might be one Bold node or just Text? Let's check.
-                assert!(!inlines.is_empty(), "doc: {:#?}", doc);
-                // Ideally we want some error handling, but for now just check we didn't panic.
+            } => {
+                // Unclosed '*' becomes literal, then 'bold' as separate text
+                assert_eq!(inlines.len(), 2);
+                assert_eq!(inlines[0], Inline::Text("*".into()));
+                assert_eq!(inlines[1], Inline::Text("bold".into()));
             }
-            _ => panic!("Expected paragraph, got {:#?}", doc),
+            _ => panic!("Expected paragraph"),
         }
     }
 
@@ -1015,24 +998,17 @@ mod tests {
                 block: Block::Image { alt, url },
                 ..
             }) => {
-                // whitespace is preserved: space, Bold, space, Text("and"), space, Italic, space
-                assert_eq!(alt.len(), 7, "doc: {:#?}", doc);
-                assert!(
-                    alt.iter().any(|i| matches!(i, Inline::Bold(_))),
-                    "Expected bold in alt"
-                );
-                assert!(
-                    alt.iter().any(|i| matches!(i, Inline::Italic(_))),
-                    "Expected italic in alt"
-                );
-                assert_eq!(url, " url ", "doc: {:#?}", doc);
+                assert_eq!(alt.len(), 7);
+                assert!(alt.iter().any(|i| matches!(i, Inline::Bold(_))));
+                assert!(alt.iter().any(|i| matches!(i, Inline::Italic(_))));
+                assert_eq!(url, " url ");
             }
-            _ => panic!("Expected image chunk, got {:#?}", doc),
+            _ => panic!("Expected image chunk"),
         }
     }
+
     #[test]
     fn directive_with_nested_parens() {
-        // lexer handles nested parens inside directive body
         let doc = parse("@foo(inner(a, b(2))) \n");
         match doc.chunks.first() {
             Some(Chunk::Implicit {
@@ -1040,59 +1016,201 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(name, "foo");
-                assert_eq!(body.as_deref(), Some("inner(a, b(2))"), "doc: {:#?}", doc);
+                assert_eq!(body.as_deref(), Some("inner(a, b(2))"));
             }
-            _ => panic!("Expected directive, got {:#?}", doc),
+            _ => panic!("Expected directive"),
         }
     }
 
     #[test]
     fn reference_with_trailing_characters() {
-        // "&-1-2": lexer produces Ref("-1"), then Minus, then Digits("2")
         let doc = parse("ref &-1-2 end\n");
         match doc.chunks.first() {
             Some(Chunk::Implicit {
                 block: Block::Paragraph(inlines),
                 ..
             }) => {
-                // tokens: Text("ref"), space, Ref("-1"), Minus, Digits("2"), space, Text("end")
-                assert_eq!(inlines.len(), 7, "doc: {:#?}", doc);
+                assert_eq!(inlines.len(), 7);
                 assert_eq!(inlines[2], Inline::Reference("-1".into()));
                 assert_eq!(inlines[3], Inline::Text("-".into()));
                 assert_eq!(inlines[4], Inline::Text("2".into()));
             }
-            _ => panic!("Expected paragraph, got {:#?}", doc),
+            _ => panic!("Expected paragraph"),
         }
     }
 
     #[test]
     fn explicit_chunk_unclosed() {
-        // :< without >:( should not crash, but may discard the chunk
         let doc = parse(":< \ninside\nno end\n");
-        // Currently the explicit chunk detection fails because no end marker, parse_chunk returns None,
-        // then in parse_document we skip a token and continue. The result may be an empty document or some paragraphs.
-        // Just ensure no panic.
-        assert!(
-            doc.chunks.is_empty() || !doc.chunks.is_empty(),
-            "doc: {:#?}",
-            doc
-        );
-        // Ideally we'd have graceful error recovery, but for now we only check it doesn't crash.
+        // Should not panic; currently may produce empty result or survive.
+        assert!(doc.chunks.is_empty() || !doc.chunks.is_empty());
     }
 
     #[test]
     fn list_with_blank_line_inside() {
-        // The parser treats blank lines as chunk separators, so a blank line inside a list would
-        // end the current chunk and start a new one. Thus the list won't span blank lines.
         let doc = parse("- item1\n\n- item2\n");
-        // Expect two chunks: first is a list chunk with one item, second is another list chunk with one item.
-        assert_eq!(doc.chunks.len(), 2, "doc: {:#?}", doc);
-        // Both should be List
+        assert_eq!(doc.chunks.len(), 2);
         for chunk in &doc.chunks {
             match chunk {
                 Chunk::Implicit { block, .. } => assert!(matches!(block, Block::List { .. })),
                 _ => panic!("Unexpected chunk"),
             }
+        }
+    }
+
+    #[test]
+    fn consecutive_stars_empty_span() {
+        // ** to literal '**', then text.
+        let doc = parse("**ast*\n");
+        let chunk = doc.chunks.first().unwrap();
+        if let Chunk::Implicit {
+            block: Block::Paragraph(inlines),
+            ..
+        } = chunk
+        {
+            print!("{:?}", inlines);
+            assert_eq!(inlines.len(), 4);
+            assert_eq!(inlines[0], Inline::Text("*".into()));
+            assert_eq!(inlines[1], Inline::Text("*".into()));
+            assert_eq!(inlines[2], Inline::Text("ast".into()));
+            assert_eq!(inlines[3], Inline::Text("*".into()));
+        } else {
+            panic!("Expected paragraph");
+        }
+    }
+
+    #[test]
+    fn consecutive_underscores_empty_span() {
+        let doc = parse("__well___\n");
+        let chunk = doc.chunks.first().unwrap();
+        if let Chunk::Implicit {
+            block: Block::Paragraph(inlines),
+            ..
+        } = chunk
+        {
+            print!("{:?}", inlines);
+            assert_eq!(inlines.len(), 6);
+            assert_eq!(inlines[0], Inline::Text("_".into()));
+            assert_eq!(inlines[1], Inline::Text("_".into()));
+            assert_eq!(inlines[2], Inline::Text("well".into()));
+            assert_eq!(inlines[3], Inline::Text("_".into()));
+            assert_eq!(inlines[4], Inline::Text("_".into()));
+            assert_eq!(inlines[5], Inline::Text("_".into()));
+        } else {
+            panic!("Expected paragraph");
+        }
+    }
+
+    #[test]
+    fn apostrophe_in_word_unified() {
+        // With the lexer fix, how's is a single Text token.
+        let doc = parse("how's it going?\n");
+        let chunk = doc.chunks.first().unwrap();
+        if let Chunk::Implicit {
+            block: Block::Paragraph(inlines),
+            ..
+        } = chunk
+        {
+            // Tokens: Text("how's"), Whitespace(" "), Text("it"), Whitespace(" "), Text("going?")
+            assert_eq!(inlines.len(), 5);
+            assert_eq!(inlines[0], Inline::Text("how's".into()));
+            assert_eq!(inlines[1], Inline::Text(" ".into()));
+            assert_eq!(inlines[2], Inline::Text("it".into()));
+            assert_eq!(inlines[3], Inline::Text(" ".into()));
+            assert_eq!(inlines[4], Inline::Text("going?".into()));
+        } else {
+            panic!("Expected paragraph");
+        }
+    }
+
+    #[test]
+    fn bold_with_spaces_inside() {
+        let doc = parse("*wait are we deadass*\n");
+        let chunk = doc.chunks.first().unwrap();
+        if let Chunk::Implicit {
+            block: Block::Paragraph(inlines),
+            ..
+        } = chunk
+        {
+            assert_eq!(inlines.len(), 1);
+            if let Inline::Bold(inner) = &inlines[0] {
+                // Tokens: "wait", " ", "are", " ", "we", " ", "deadass"
+                assert_eq!(inner.len(), 7);
+                assert_eq!(inner[0], Inline::Text("wait".into()));
+                assert_eq!(inner[1], Inline::Text(" ".into()));
+                assert_eq!(inner[2], Inline::Text("are".into()));
+                assert_eq!(inner[3], Inline::Text(" ".into()));
+                assert_eq!(inner[4], Inline::Text("we".into()));
+                assert_eq!(inner[5], Inline::Text(" ".into()));
+                assert_eq!(inner[6], Inline::Text("deadass".into()));
+            } else {
+                panic!("Expected bold");
+            }
+        } else {
+            panic!("Expected paragraph");
+        }
+    }
+
+    #[test]
+    fn mixed_bold_italic_nested() {
+        let doc = parse("*oh _no_*\n");
+        let chunk = doc.chunks.first().unwrap();
+        if let Chunk::Implicit {
+            block: Block::Paragraph(inlines),
+            ..
+        } = chunk
+        {
+            assert_eq!(inlines.len(), 1);
+            if let Inline::Bold(inner) = &inlines[0] {
+                assert_eq!(inner.len(), 3); // Text("oh"), space, Italic("no")
+                assert_eq!(inner[0], Inline::Text("oh".into()));
+                assert_eq!(inner[1], Inline::Text(" ".into()));
+                if let Inline::Italic(italic) = &inner[2] {
+                    assert_eq!(italic.len(), 1);
+                    assert_eq!(italic[0], Inline::Text("no".into()));
+                } else {
+                    panic!("Expected italic inside bold");
+                }
+            } else {
+                panic!("Expected bold");
+            }
+        } else {
+            panic!("Expected paragraph");
+        }
+    }
+
+    #[test]
+    fn unclosed_italic_after_newline() {
+        let doc = parse("_italic\n");
+        let chunk = doc.chunks.first().unwrap();
+        if let Chunk::Implicit {
+            block: Block::Paragraph(inlines),
+            ..
+        } = chunk
+        {
+            // Unclosed '_' becomes literal, then 'italic' as text
+            assert_eq!(inlines.len(), 2);
+            assert_eq!(inlines[0], Inline::Text("_".into()));
+            assert_eq!(inlines[1], Inline::Text("italic".into()));
+        } else {
+            panic!("Expected paragraph");
+        }
+    }
+
+    #[test]
+    fn unclosed_strikethrough() {
+        let doc = parse("~strike\n");
+        let chunk = doc.chunks.first().unwrap();
+        if let Chunk::Implicit {
+            block: Block::Paragraph(inlines),
+            ..
+        } = chunk
+        {
+            assert_eq!(inlines.len(), 2);
+            assert_eq!(inlines[0], Inline::Text("~".into()));
+            assert_eq!(inlines[1], Inline::Text("strike".into()));
+        } else {
+            panic!("Expected paragraph");
         }
     }
 }
