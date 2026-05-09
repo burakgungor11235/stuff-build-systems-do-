@@ -11,7 +11,7 @@ pub const C_RED: Colour = Colour::Fixed(160); // Red
 pub const C_GREY: Colour = Colour::Fixed(242); // Mid grey
 pub const C_WHITE: Colour = Colour::Fixed(255); // Off-white
 
-pub(crate)  fn bold(c: Colour) -> Style {
+pub(crate) fn bold(c: Colour) -> Style {
     c.bold()
 }
 pub(crate) fn norm(c: Colour) -> Style {
@@ -135,6 +135,8 @@ fn highlight_token(token: &Token) -> String {
         Token::HorizontalRule => bold(C_TEAL).paint("HorizontalRule").to_string(),
         Token::ImageStart => bold(C_TEAL).paint("ImageStart").to_string(),
 
+        Token::LinkStart => norm(C_TEAL).paint("[[").to_string(),
+        Token::LinkEnd => norm(C_TEAL).paint("]]").to_string(),
         // ---- metadata (purple) ----
         Token::Reference(s) => format!(
             "{}({})",
@@ -154,6 +156,11 @@ fn highlight_token(token: &Token) -> String {
             norm(C_WHITE).paint(s)
         ),
 
+        Token::Transclusion(s) => format!(
+            "{}({})",
+            bold(C_GREEN).paint("Transclusion"),
+            norm(C_WHITE).paint(s)
+        ),
         // ---- trivia (grey) ----
         Token::Whitespace(s) => norm(C_GREY)
             .paint(s.replace(' ', "·").replace('\t', "␣"))
@@ -330,7 +337,21 @@ fn highlight_inline(inline: &crate::markup::ast::Inline) -> String {
                 Colour::White.paint(r)
             )
         }
+        crate::markup::ast::Inline::Link { target, display } => {
+            format!(
+                "{}({}, {})",
+                bold(C_BLUE).paint("Link"),
+                highlight_inline_list(display),
+                norm(C_PURPLE).paint(target)
+            )
+        }
+
+        crate::markup::ast::Inline::Transclusion(t) => {
+            format!(
+                "{}({})",
+                bold(C_PURPLE).paint("Transclusion"),
+                norm(C_WHITE).paint(t)
+            )
+        }
     }
 }
-
-

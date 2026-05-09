@@ -24,7 +24,6 @@ pub fn highlight_source(source: &str) -> String {
 
 fn colour_token_slice(token: &Token, slice: &str) -> String {
     match token {
-        // --- structure (blue) ---
         Token::Directive(_) => bold(C_BLUE).paint(slice).to_string(),
         Token::SimpleDirective(_) => bold(C_BLUE).paint(slice).to_string(),
         Token::Heading(_) => bold(C_BLUE).paint(slice).to_string(),
@@ -32,8 +31,6 @@ fn colour_token_slice(token: &Token, slice: &str) -> String {
         Token::ExplicitChunkEnd(_) => bold(C_BLUE).paint(slice).to_string(),
         Token::ImplicitChunk(_) => bold(C_BLUE).paint(slice).to_string(),
         Token::HorizontalRule => bold(C_BLUE).paint(slice).to_string(),
-
-        // --- inline formatting delimiters (teal) ---
         Token::Star
         | Token::Underscore
         | Token::Tilde
@@ -49,30 +46,22 @@ fn colour_token_slice(token: &Token, slice: &str) -> String {
         | Token::Bang
         | Token::LBracket
         | Token::RBracket
-        | Token::Pipe => norm(C_TEAL).paint(slice).to_string(),
+        | Token::Pipe
+        | Token::LinkStart
+        | Token::LinkEnd => norm(C_TEAL).paint(slice).to_string(),
 
-        // --- block markers (teal) ---
         Token::BlockquotePrefix => bold(C_TEAL).paint(slice).to_string(),
         Token::ImageStart => bold(C_TEAL).paint(slice).to_string(),
-
-        // --- references & escapes (purple) ---
         Token::Reference(_) => bold(C_PURPLE).paint(slice).to_string(),
         Token::Escape(_) => norm(C_PURPLE).paint(slice).to_string(),
-
-        // --- numbers (green) ---
         Token::Digits(_) => norm(C_GREEN).paint(slice).to_string(),
-
-        // --- whitespace & newlines (grey) ---
         Token::Whitespace(_) => norm(C_GREY)
             .paint(slice.replace(' ', "·").replace('\t', "␣"))
             .to_string(),
-        Token::Newline => norm(C_GREY).paint("¶\n".to_string()).to_string(), // show pilcrow + actual newline
-
-        // --- comments (grey) ---
+        Token::Newline => norm(C_GREY).paint("¶\n".to_string()).to_string(),
         Token::Comment | Token::IncompleteComment => norm(C_GREY).paint(slice).to_string(),
-
-        // --- text (white) ---
         Token::Text(_) => norm(C_WHITE).paint(slice).to_string(),
+        Token::Transclusion(_) => norm(C_PURPLE).paint(slice).to_string(),
     }
 }
 pub struct InputHighlighter;
