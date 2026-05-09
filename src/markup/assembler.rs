@@ -40,9 +40,15 @@ fn render_block(block: &Block) -> String {
             let alt_text = render_inlines(alt);
             format!("<img src=\"{url}\" alt=\"{alt_text}\" />")
         }
-        Block::Directive { .. } => {
+        Block::Directive { name, body } => {
             // For now, ignore or render as a placeholder
-            String::new()
+            format!(
+                "DEBUG: @{name}{}",
+                match body {
+                    Some(s) => s,
+                    None => "",
+                }
+            )
         }
         Block::List { items, ordered } => {
             let tag = if *ordered { "ol" } else { "ul" };
@@ -66,9 +72,21 @@ fn render_inline(inline: &Inline) -> String {
         Inline::Italic(inner) => format!("<em>{}</em>", render_inlines(inner)),
         Inline::Strikethrough(inner) => format!("<del>{}</del>", render_inlines(inner)),
         Inline::Reference(r) => format!("<!-- ref:{} -->", r), // placeholder
+
+        Inline::Link { target, display } => {
+            let display_html = render_inlines(display);
+            format!("<a href=\"{}\">{}</a>", escape_attr(target), display_html)
+        }
+        Inline::Transclusion(raw) => {
+            // placeholder for now
+            format!("<!-- transclude: {} -->", raw)
+        }
     }
 }
-
+fn escape_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+     .replace('"', "&quot;")
+}
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")

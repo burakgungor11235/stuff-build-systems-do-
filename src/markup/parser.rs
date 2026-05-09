@@ -130,32 +130,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_inline(&mut self) -> Vec<Inline> {
-        let mut nodes = Vec::new();
-        loop {
-            self.tokens.skip_inline_trivia();
-            match self.tokens.peek() {
-                None
-                | Some(Token::Newline)
-                | Some(Token::ExplicitChunkEnd(_))
-                | Some(Token::ImplicitChunk(_)) => break,
-
-                Some(Token::Star) => nodes.push(self.parse_bold()),
-                Some(Token::Underscore) => nodes.push(self.parse_italic()),
-                Some(Token::Tilde) => nodes.push(self.parse_strikethrough()),
-                Some(Token::Reference(r)) => {
-                    nodes.push(Inline::Reference(r.clone()));
-                    self.tokens.next();
-                }
-                _ => {
-                    let text = self.token_to_text();
-                    nodes.push(Inline::Text(text));
-                }
-            }
-        }
-        nodes
-    }
-
     fn parse_inline_until_newline(&mut self) -> Vec<Inline> {
         let nodes = self.parse_inline_linear(None);
         self.tokens.skip_trivia();
@@ -164,51 +138,18 @@ impl<'a> Parser<'a> {
         }
         nodes
     }
-
-    /// Parse inline elements until we see the given `stop` token (which is consumed),
-    /// or end of line / chunk.
-    fn parse_inline_until(&mut self, stop: Token) -> Vec<Inline> {
-        let mut nodes = Vec::new();
-        loop {
-            self.tokens.skip_inline_trivia();
-            match self.tokens.peek() {
-                None => break,
-                Some(t) if *t == stop => {
-                    self.tokens.next(); // consume stop
-                    break;
-                }
-                Some(Token::Newline | Token::ExplicitChunkEnd(_) | Token::ImplicitChunk(_)) => {
-                    break
-                }
-                Some(Token::Star) => nodes.push(self.parse_bold()),
-                Some(Token::Underscore) => nodes.push(self.parse_italic()),
-                Some(Token::Tilde) => nodes.push(self.parse_strikethrough()),
-                Some(Token::Reference(r)) => {
-                    nodes.push(Inline::Reference(r.clone()));
-                    self.tokens.next();
-                }
-                _ => {
-                    let text = self.token_to_text();
-                    nodes.push(Inline::Text(text));
-                }
-            }
-        }
-        nodes
-    }
-
     fn parse_inline_linear(&mut self, stop: Option<Token>) -> Vec<Inline> {
         let mut output: Vec<Inline> = Vec::new();
-        // Stack: (delimiter token, index in output where the placeholder sits)
         let mut delim_stack: Vec<(Token, usize)> = Vec::new();
 
         loop {
             self.tokens.skip_inline_trivia();
 
-            // Check for end of inline conditions
+            // End conditions
             match self.tokens.peek() {
                 None => break,
                 Some(t) if stop.as_ref() == Some(t) => {
-                    self.tokens.next(); // consume the stop token
+                    self.tokens.next();
                     break;
                 }
                 Some(Token::Newline | Token::ExplicitChunkEnd(_) | Token::ImplicitChunk(_)) => {
@@ -217,90 +158,161 @@ impl<'a> Parser<'a> {
                 _ => {}
             }
 
-            // Grab the actual token
-            let tok = self.tokens.peek().unwrap().clone();
-            self.tokens.next();
+            let tok = self.tokens.next().unwrap();
 
             match tok {
-                // Delimiters that can form formatting spans
+                // special inline constructs 
                 Token::Star | Token::Underscore | Token::Tilde => {
-                    if let Some(&(ref open_tok, start_idx)) = delim_stack.last() {
-                        if *open_tok == tok {
-                            // Attempt to close the span
-                            delim_stack.pop();
-                           let placeholder = output.remove(start_idx);
-                            let _ = placeholder; // Inline::Text("")
+                    self.handle_formatting_delimiter(tok, &mut output, &mut delim_stack);
+                }
 
-                            let inner: Vec<Inline> = output.drain(start_idx..).collect();
-                            if inner.is_empty() {
-                                output.push(Inline::Text(tok.inline_as_str().to_owned()));
-                               output.insert(start_idx, Inline::Text(tok.inline_as_str().into()));
-                            } else {
-                                let wrapped = match tok {
-                                    Token::Star => Inline::Bold(inner),
-                                    Token::Underscore => Inline::Italic(inner),
-                                    Token::Tilde => Inline::Strikethrough(inner),
-                                    _ => unreachable!(),
-                                };
-                                output.push(wrapped);
+                Token::LinkStart => {
+                    // link target 
+                    let mut target = String::new();
+                    loop {
+                        self.tokens.skip_inline_trivia();
+                        match self.tokens.peek() {
+                            Some(Token::LinkEnd) | None => break,
+                            Some(Token::Pipe) => break,
+                            _ => {
+                                self.tokens.next();
+                                target.push_str(self.tokens.last_slice());
                             }
-                            continue;
                         }
                     }
-                    let placeholder_idx = output.len();
-                    delim_stack.push((tok, placeholder_idx));
-                    output.push(Inline::Text(String::new())); // empty placeholder
+                    // link display 
+                    let display = if self.tokens.peek() == Some(&Token::Pipe) {
+                        self.tokens.next(); // consume |
+                        self.parse_inline_linear(Some(Token::LinkEnd))
+                    } else {
+                        vec![Inline::Text(target.clone())]
+                    };
+                    // consume LinkEnd
+                    if self.tokens.peek() == Some(&Token::LinkEnd) {
+                        self.tokens.next();
+                    }
+                    output.push(Inline::Link { target, display });
+                }
+
+                Token::Transclusion(raw) => {
+                    output.push(Inline::Transclusion(raw));
                 }
 
                 Token::Reference(r) => {
-                    output.push(Inline::Reference(r.clone()));
+                    output.push(Inline::Reference(r));
                 }
-
-                _ => {
-                    let text = match tok {
-                        Token::Text(s) | Token::Whitespace(s) | Token::Digits(s) => s,
-                        Token::Escape(esc) => esc[1..].to_string(),
-                        _ => self.tokens.last_slice().to_string(),
-                    };
-                    output.push(Inline::Text(text));
+                // yeet the rest back
+                other => {
+                    output.push(self.token_to_inline(other));
                 }
             }
         }
 
-        // Unwind any unclosed delimiters: replace their placeholder with the literal char
+        // unwind unclosed delimiters 
         for (open_tok, placeholder_idx) in delim_stack.into_iter().rev() {
             output.remove(placeholder_idx);
             output.insert(
                 placeholder_idx,
                 Inline::Text(open_tok.inline_as_str().to_owned()),
             );
-            // Note: everything after the placeholder (and possibly after further unclosed spans) stays as-is.
         }
-
-        // Remove any stray empty Text nodes (should be none, but just in case)
+        // remove stray empty placeholders
         output.retain(|n| !matches!(n, Inline::Text(s) if s.is_empty()));
 
         output
     }
-
-    fn parse_bold(&mut self) -> Inline {
-        self.tokens.next(); // consume opening Star
-        let inner = self.parse_inline_until(Token::Star); // stops at and eats closing Star
-        Inline::Bold(inner)
+    /// Handle `Star`, `Underscore`, or `Tilde` using the existing stack algorithm.
+    fn handle_formatting_delimiter(
+        &mut self,
+        tok: Token,
+        output: &mut Vec<Inline>,
+        delim_stack: &mut Vec<(Token, usize)>,
+    ) {
+        if let Some(&(ref open_tok, start_idx)) = delim_stack.last() {
+            if *open_tok == tok {
+                delim_stack.pop();
+                let _placeholder = output.remove(start_idx); // empty placeholder
+                let inner: Vec<Inline> = output.drain(start_idx..).collect();
+                if inner.is_empty() {
+                    // convert to literal
+                    output.push(Inline::Text(tok.inline_as_str().to_owned()));
+                    output.insert(start_idx, Inline::Text(tok.inline_as_str().into()));
+                } else {
+                    let wrapped = match tok {
+                        Token::Star => Inline::Bold(inner),
+                        Token::Underscore => Inline::Italic(inner),
+                        Token::Tilde => Inline::Strikethrough(inner),
+                        _ => unreachable!(),
+                    };
+                    output.push(wrapped);
+                }
+                return; // important: we already placed the result, continue to next token
+            }
+        }
+        // Cannot close. Start a new possible span
+        let placeholder_idx = output.len();
+        delim_stack.push((tok, placeholder_idx));
+        output.push(Inline::Text(String::new())); // empty placeholder
     }
+    
+    /// Convert an inline token that has no special structure into an `Inline::Text`.
+    /// Exhaustive match - adding a new token variant will cause a compile error here.
+    /// The last one did _ =>. which when adding new stuff causes unnecessary debugging. 
+    fn token_to_inline(&self, tok: Token) -> Inline {
+        match tok {
+            // Text-like tokens
+            Token::Text(s) | Token::Whitespace(s) | Token::Digits(s) => Inline::Text(s),
+            Token::Escape(esc) => Inline::Text(esc[1..].to_string()),
 
-    fn parse_italic(&mut self) -> Inline {
-        self.tokens.next(); // consume opening Underscore
-        let inner = self.parse_inline_until(Token::Underscore);
-        Inline::Italic(inner)
+            // Punctuation that can appear inside inline
+            Token::LBracket => Inline::Text("[".into()),
+            Token::RBracket => Inline::Text("]".into()),
+            Token::LParen => Inline::Text("(".into()),
+            Token::RParen => Inline::Text(")".into()),
+            Token::LBrace => Inline::Text("{".into()),
+            Token::RBrace => Inline::Text("}".into()),
+            Token::Slash => Inline::Text("/".into()),
+            Token::Plus => Inline::Text("+".into()),
+            Token::Minus => Inline::Text("-".into()),
+            Token::Dot => Inline::Text(".".into()),
+            Token::Bang => Inline::Text("!".into()),
+            Token::Pipe => Inline::Text("|".into()),
+            Token::Caret => Inline::Text("^".into()),
+
+            // Multi-character literals
+            Token::LinkEnd => Inline::Text("]]".into()),
+            Token::ImageStart => Inline::Text("![".into()),
+            Token::BlockquotePrefix => Inline::Text(self.tokens.last_slice().to_string()),
+            Token::Heading(_)
+            | Token::HorizontalRule
+            | Token::SimpleDirective(_)
+            | Token::Directive(_)
+            | Token::ExplicitChunkStart
+            | Token::ExplicitChunkEnd(_)
+            | Token::ImplicitChunk(_)
+            | Token::Newline => Inline::Text(self.tokens.last_slice().to_string()),
+
+            // Comments (shouldn't appear after skip_inline_trivia, but be safe)
+            Token::Comment | Token::IncompleteComment => {
+                Inline::Text(self.tokens.last_slice().to_string())
+            }
+
+            // The special tokens that are **not** passed to this function.
+            // They must be matched in the caller. Using unreachable! here is fine
+            // because they are dispatched earlier.
+            Token::Star
+            | Token::Underscore
+            | Token::Tilde
+            | Token::LinkStart
+            | Token::Transclusion(_)
+            | Token::Reference(_) => {
+                unreachable!(
+                    "{} should be handled before token_to_inline",
+                    self.tokens.last_slice()
+                )
+            }
+        }
     }
-
-    fn parse_strikethrough(&mut self) -> Inline {
-        self.tokens.next(); // consume opening Tilde
-        let inner = self.parse_inline_until(Token::Tilde);
-        Inline::Strikethrough(inner)
-    }
-
     // Block helpers
     fn count_blockquote_prefix(&mut self) -> u32 {
         self.tokens.next(); // consume BlockquotePrefix
@@ -371,20 +383,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect(&mut self, expected: Token) {
-        self.tokens.skip_trivia();
-        let _ = self.tokens.next(); // ignore mismatches for now
-    }
-
-    /// Consume the next token and return its textual representation.
-    fn token_to_text(&mut self) -> String {
-        let tok = self.tokens.next().expect("expected token");
-        match tok {
-            Token::Text(s) | Token::Whitespace(s) | Token::Digits(s) => s,
-            Token::Escape(esc) => esc[1..].to_string(), // strip the leading backslash
-            _ => self.tokens.last_slice().to_string(),
-        }
-    }
 }
 
 /// Flatten inline elements into a plain text string (used for image URLs, etc.)
@@ -397,6 +395,8 @@ fn inlines_to_plain_text(inlines: &[Inline]) -> String {
                 s.push_str(&inlines_to_plain_text(inner));
             }
             Inline::Reference(r) => s.push_str(r),
+            Inline::Link { .. }  => todo!(),
+            Inline::Transclusion(_) => todo!(),
         }
     }
     s
@@ -461,7 +461,9 @@ mod tests {
             Chunk::Implicit { block, .. } => {
                 if let Block::Paragraph(inlines) = block {
                     assert_eq!(inlines.len(), 1);
-                    assert!(matches!(&inlines[0], Inline::Bold(inner) if inner == &[Inline::Text("bold".into())]));
+                    assert!(
+                        matches!(&inlines[0], Inline::Bold(inner) if inner == &[Inline::Text("bold".into())])
+                    );
                 } else {
                     panic!("Expected paragraph");
                 }
@@ -478,7 +480,9 @@ mod tests {
             Chunk::Implicit { block, .. } => {
                 if let Block::Paragraph(inlines) = block {
                     assert_eq!(inlines.len(), 1);
-                    assert!(matches!(&inlines[0], Inline::Italic(inner) if inner == &[Inline::Text("italic".into())]));
+                    assert!(
+                        matches!(&inlines[0], Inline::Italic(inner) if inner == &[Inline::Text("italic".into())])
+                    );
                 } else {
                     panic!("Expected paragraph");
                 }
@@ -495,7 +499,9 @@ mod tests {
             Chunk::Implicit { block, .. } => {
                 if let Block::Paragraph(inlines) = block {
                     assert_eq!(inlines.len(), 1);
-                    assert!(matches!(&inlines[0], Inline::Strikethrough(inner) if inner == &[Inline::Text("deleted".into())]));
+                    assert!(
+                        matches!(&inlines[0], Inline::Strikethrough(inner) if inner == &[Inline::Text("deleted".into())])
+                    );
                 } else {
                     panic!("Expected paragraph");
                 }
@@ -869,7 +875,9 @@ mod tests {
         // first chunk: paragraph containing " unclosed..." (the space before unclosed)
         if let Chunk::Implicit { block, .. } = &doc.chunks[0] {
             if let Block::Paragraph(inlines) = block {
-                assert!(inlines.iter().any(|i| matches!(i, Inline::Text(s) if s.contains("unclosed"))));
+                assert!(inlines
+                    .iter()
+                    .any(|i| matches!(i, Inline::Text(s) if s.contains("unclosed"))));
             } else {
                 panic!("Expected paragraph");
             }
@@ -896,10 +904,34 @@ mod tests {
     fn multiple_paragraphs_and_headings() {
         let doc = parse("line1\n\nline2\n\n#1 Title\n\npara after heading\n");
         assert_eq!(doc.chunks.len(), 4);
-        assert!(matches!(&doc.chunks[0], Chunk::Implicit { block: Block::Paragraph(_), .. }));
-        assert!(matches!(&doc.chunks[1], Chunk::Implicit { block: Block::Paragraph(_), .. }));
-        assert!(matches!(&doc.chunks[2], Chunk::Implicit { block: Block::Heading { .. }, .. }));
-        assert!(matches!(&doc.chunks[3], Chunk::Implicit { block: Block::Paragraph(_), .. }));
+        assert!(matches!(
+            &doc.chunks[0],
+            Chunk::Implicit {
+                block: Block::Paragraph(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &doc.chunks[1],
+            Chunk::Implicit {
+                block: Block::Paragraph(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &doc.chunks[2],
+            Chunk::Implicit {
+                block: Block::Heading { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            &doc.chunks[3],
+            Chunk::Implicit {
+                block: Block::Paragraph(_),
+                ..
+            }
+        ));
     }
 
     #[test]

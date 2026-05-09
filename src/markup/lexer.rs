@@ -115,7 +115,15 @@ pub enum Token {
     RBracket,
     #[token("|")]
     Pipe,
+    #[token("[[", priority= 5)]
+    LinkStart,
+    #[token("]]", priority=5)]
+    LinkEnd,
 
+    // Transclusion: !& followed by a non-whitespace index expression.
+    // The expression can contain letters, digits, #, ., .., -, +, (, ) and commas.
+    #[regex(r"!&[^\s\[\]\{\}<>*_\~@]+", |lex| lex.slice().to_string())]
+    Transclusion(String),
     /// A complete, balanced comment: `/' ... '/`
     #[regex(r"/'([^']|'[^/])*'/", priority = 2)]
     Comment,
@@ -134,7 +142,7 @@ pub enum Token {
 }
 
 impl Token {
-   pub fn inline_as_str(&self) -> &str{
+    pub fn inline_as_str(&self) -> &str {
         match self {
             Token::Star => "*",
             Token::Underscore => "_",

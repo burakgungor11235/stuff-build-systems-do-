@@ -48,6 +48,11 @@ pub enum Inline {
     Italic(Vec<Inline>),
     Strikethrough(Vec<Inline>),
     Reference(String), // the string inside &... , e.g. "-1", "my_chunk"
+    Link {
+        target: String,
+        display: Vec<Inline>,
+    },
+    Transclusion(String),
 }
 
 use std::fmt;
@@ -143,6 +148,8 @@ impl fmt::Debug for Inline {
             Inline::Bold(inner) => write!(f, "Bold({:?})", inner),
             Inline::Italic(inner) => write!(f, "Italic({:?})", inner),
             Inline::Strikethrough(inner) => write!(f, "Strikethrough({:?})", inner),
+            Inline::Link { target, display } => write!(f, "Link({:?} -> {:?})", target, display),
+            Inline::Transclusion(s) => write!(f, "Transclude({:?})", s),
             Inline::Reference(r) => write!(f, "Ref({:?})", r),
         }
     }
