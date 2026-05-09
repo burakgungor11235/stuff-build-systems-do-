@@ -162,7 +162,6 @@ mod tests {
 
     #[test]
     fn heading_levels() {
-        let tokens = lex("#1 #2 #99");
         // Three headings with spaces/text between? Actually "#1 " is heading then whitespace then "#2" etc.
         // Let's lex "#1 Title" to be precise.
         let tokens = lex("#1 Title");
