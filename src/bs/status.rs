@@ -91,7 +91,7 @@ impl Status {
                 // Check if output file exists on disk: manifest_dir / output_rel
                 let output_exists = manifest_dir.join(&output_rel).exists();
 
-                let status = cache.is_fresh(&manifest_dir.join(&src_dir), &source_path);
+                let status = cache.is_fresh(&manifest_dir.join(src_dir), source_path);
 
                 let color ;
                 let marker;

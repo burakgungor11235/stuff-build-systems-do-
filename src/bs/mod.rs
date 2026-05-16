@@ -4,3 +4,4 @@ pub mod cache;
 pub mod builder;
 pub mod clean;
 pub mod status;
+pub mod registry;

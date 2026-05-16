@@ -39,6 +39,10 @@ fn colour_token_slice(token: &Token, slice: &str) -> String {
         | Token::RBrace
         | Token::LParen
         | Token::RParen
+        | Token::Ampersand
+        | Token::Hash
+        | Token::DotDot
+        | Token::Comma
         | Token::Slash
         | Token::Plus
         | Token::Minus
@@ -52,7 +56,6 @@ fn colour_token_slice(token: &Token, slice: &str) -> String {
 
         Token::BlockquotePrefix => bold(C_TEAL).paint(slice).to_string(),
         Token::ImageStart => bold(C_TEAL).paint(slice).to_string(),
-        Token::Reference(_) => bold(C_PURPLE).paint(slice).to_string(),
         Token::Escape(_) => norm(C_PURPLE).paint(slice).to_string(),
         Token::Digits(_) => norm(C_GREEN).paint(slice).to_string(),
         Token::Whitespace(_) => norm(C_GREY)
@@ -61,7 +64,6 @@ fn colour_token_slice(token: &Token, slice: &str) -> String {
         Token::Newline => norm(C_GREY).paint("¶\n".to_string()).to_string(),
         Token::Comment | Token::IncompleteComment => norm(C_GREY).paint(slice).to_string(),
         Token::Text(_) => norm(C_WHITE).paint(slice).to_string(),
-        Token::Transclusion(_) => norm(C_PURPLE).paint(slice).to_string(),
     }
 }
 pub struct InputHighlighter;

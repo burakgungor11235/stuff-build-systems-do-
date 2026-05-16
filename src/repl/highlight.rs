@@ -135,14 +135,13 @@ fn highlight_token(token: &Token) -> String {
         Token::HorizontalRule => bold(C_TEAL).paint("HorizontalRule").to_string(),
         Token::ImageStart => bold(C_TEAL).paint("ImageStart").to_string(),
 
+        Token::Ampersand => norm(C_TEAL).paint("&").to_string(),
+        Token::Hash => norm(C_TEAL).paint("#").to_string(),
+        Token::DotDot => norm(C_TEAL).paint("..").to_string(),
+        Token::Comma => norm(C_TEAL).paint(",").to_string(),
         Token::LinkStart => norm(C_TEAL).paint("[[").to_string(),
         Token::LinkEnd => norm(C_TEAL).paint("]]").to_string(),
         // ---- metadata (purple) ----
-        Token::Reference(s) => format!(
-            "{}({})",
-            bold(C_PURPLE).paint("Reference"),
-            norm(C_WHITE).paint(s)
-        ),
         Token::Escape(s) => format!(
             "{}({})",
             bold(C_PURPLE).paint("Escape"),
@@ -153,12 +152,6 @@ fn highlight_token(token: &Token) -> String {
         Token::Digits(s) => format!(
             "{}({})",
             norm(C_GREEN).paint("Digits"),
-            norm(C_WHITE).paint(s)
-        ),
-
-        Token::Transclusion(s) => format!(
-            "{}({})",
-            bold(C_GREEN).paint("Transclusion"),
             norm(C_WHITE).paint(s)
         ),
         // ---- trivia (grey) ----
@@ -334,7 +327,7 @@ fn highlight_inline(inline: &crate::markup::ast::Inline) -> String {
             format!(
                 "{}({})",
                 Colour::Yellow.bold().paint("Ref"),
-                Colour::White.paint(r)
+                Colour::White.paint(format!("{:?}", r))
             )
         }
         crate::markup::ast::Inline::Link { target, display } => {
@@ -350,7 +343,7 @@ fn highlight_inline(inline: &crate::markup::ast::Inline) -> String {
             format!(
                 "{}({})",
                 bold(C_PURPLE).paint("Transclusion"),
-                norm(C_WHITE).paint(t)
+                norm(C_WHITE).paint(format!("{:?}", t))
             )
         }
     }

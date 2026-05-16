@@ -1,3 +1,29 @@
+#[derive(Clone, PartialEq, Debug)]
+pub enum RefExpr {
+    /// &NAME : named chunk in current file
+    Named(String),
+    /// &-N or &+N : relative offset from current chunk
+    Relative(i32),
+    /// &N : absolute chunk index in current file
+    Absolute(usize),
+    /// &a..b : range of chunks (relative offsets)
+    Range(i32, i32),
+    /// &(expr1, expr2, ...) : explicit list of references
+    List(Vec<RefExpr>),
+    /// &file.N : Nth chunk (0-indexed) of external file
+    FileByIndex(String, usize),
+    /// &file.name : named chunk of external file
+    FileByName(String, String),
+    /// &file#heading : first chunk under heading in external file
+    FileByHeading(String, String),
+    /// &file#heading.N : Nth chunk under heading in external file
+    FileByHeadingIndex(String, String, usize),
+    /// &file#heading.name : named chunk under heading in external file
+    FileByHeadingName(String, String, String),
+    /// &#heading.. : all chunks below heading (current file)
+    HeadingRange(String),
+}
+
 #[derive(Clone)]
 pub struct Document {
     pub chunks: Vec<Chunk>,
@@ -25,7 +51,7 @@ pub enum Block {
     Blockquote {
         depth: u32,
         content: Vec<Inline>,
-    }, // single‑line blockquote; multiple lines become separate blockquote chunks
+    }, // Single line block quote; multiple lines become separate Blockquote chunks
     HorizontalRule,
     Image {
         alt: Vec<Inline>,
@@ -47,12 +73,12 @@ pub enum Inline {
     Bold(Vec<Inline>),
     Italic(Vec<Inline>),
     Strikethrough(Vec<Inline>),
-    Reference(String), // the string inside &... , e.g. "-1", "my_chunk"
+    Reference(RefExpr),
     Link {
         target: String,
         display: Vec<Inline>,
     },
-    Transclusion(String),
+    Transclusion(RefExpr),
 }
 
 use std::fmt;
@@ -62,12 +88,17 @@ impl fmt::Debug for Document {
         writeln!(f, "Document {{")?;
         for (i, chunk) in self.chunks.iter().enumerate() {
             write!(f, "  chunk[{}]: ", i)?;
-            // Indent inner chunk debug output
             let inner = format!("{:?}", chunk);
             let indented = inner.lines().collect::<Vec<_>>().join("\n    ");
             writeln!(f, "{}", indented)?;
         }
         writeln!(f, "}}")
+    }
+}
+
+impl Document {
+    pub fn len(&self) -> usize {
+        self.chunks.len()
     }
 }
 
@@ -82,7 +113,6 @@ impl fmt::Debug for Chunk {
                     write!(f, " name=NONE")?;
                 }
                 write!(f, " -> ")?;
-                // Indent block debug
                 let inner = format!("{:?}", block);
                 let indented = inner.lines().collect::<Vec<_>>().join("\n      ");
                 write!(f, "{}", indented)
@@ -104,18 +134,14 @@ impl fmt::Debug for Chunk {
 impl fmt::Debug for Block {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Block::Paragraph(inlines) => {
-                write!(f, "Paragraph({:?})", inlines)
-            }
+            Block::Paragraph(inlines) => write!(f, "Paragraph({:?})", inlines),
             Block::Heading { level, content } => {
                 write!(f, "Heading(level={}, {:?})", level, content)
             }
             Block::Blockquote { depth, content } => {
                 write!(f, "Blockquote(depth={}, {:?})", depth, content)
             }
-            Block::HorizontalRule => {
-                write!(f, "HorizontalRule")
-            }
+            Block::HorizontalRule => write!(f, "HorizontalRule"),
             Block::Image { alt, url } => {
                 write!(f, "Image(alt={:?}, url={:?})", alt, url)
             }
@@ -148,9 +174,11 @@ impl fmt::Debug for Inline {
             Inline::Bold(inner) => write!(f, "Bold({:?})", inner),
             Inline::Italic(inner) => write!(f, "Italic({:?})", inner),
             Inline::Strikethrough(inner) => write!(f, "Strikethrough({:?})", inner),
-            Inline::Link { target, display } => write!(f, "Link({:?} -> {:?})", target, display),
-            Inline::Transclusion(s) => write!(f, "Transclude({:?})", s),
-            Inline::Reference(r) => write!(f, "Ref({:?})", r),
+            Inline::Link { target, display } => {
+                write!(f, "Link({:?} -> {:?})", target, display)
+            }
+            Inline::Transclusion(expr) => write!(f, "Transclude({:?})", expr),
+            Inline::Reference(expr) => write!(f, "Ref({:?})", expr),
         }
     }
 }

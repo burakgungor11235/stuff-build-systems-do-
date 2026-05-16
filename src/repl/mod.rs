@@ -2,6 +2,7 @@ mod highlight;
 mod input_highlighter;
 
 use crate::markup::{assembler, lexer::Token, parser};
+use crate::bs::registry::ChunkRegistry;
 use logos::Logos;
 use rustyline::Editor;
 use std::collections::HashMap;
@@ -134,7 +135,9 @@ pub fn run() -> anyhow::Result<()> {
                     Command::ProcessHtml(name) => {
                         if let Some(content) = memory.get(&name) {
                             let doc = parser::parse(content);
-                            let html = assembler::render_to_html(&doc);
+                            let reg = ChunkRegistry::default();
+                            let ctx = assembler::RenderContext::new(&name, 0, &reg);
+                            let html = assembler::render_to_html(&doc, &ctx);
                             println!("{}", highlight::highlight_html(&html));
                         } else {
                             println!("Memory entry '{}' not found.", name);
@@ -227,24 +230,24 @@ fn parse_command(line: &str) -> Command {
     let args = parts.next().unwrap_or("").to_string();
 
     match cmd.as_str() {
-        "quit" | "q"               => Command::Quit,
-        "help" | "h" | "?"        => Command::Help,
-        "clear" | "cls"           => Command::Clear,
-        "mem" if args.is_empty()  => Command::MemoryList,
-        "mem"                      => Command::MemoryShow(args),
+        "quit" | "q" => Command::Quit,
+        "help" | "h" | "?" => Command::Help,
+        "clear" | "cls" => Command::Clear,
+        "mem" if args.is_empty() => Command::MemoryList,
+        "mem" => Command::MemoryShow(args),
         "del" | "d" if args.is_empty() => Command::MemoryClear,
-        "del" | "d"               => Command::MemoryDelete(args),
+        "del" | "d" => Command::MemoryDelete(args),
         "beg" | "b" if args.is_empty() => Command::Begin(String::new()),
-        "beg" | "b"               => Command::Begin(args),
-        "end"                      => Command::End,
+        "beg" | "b" => Command::Begin(args),
+        "end" => Command::End,
         // Mode-changing commands
         "html" if args.is_empty() => Command::Mode(OutputMode::Html),
-        "html"                     => Command::ProcessHtml(args),
+        "html" => Command::ProcessHtml(args),
         "tokens" | "tok" if args.is_empty() => Command::Mode(OutputMode::Tokens),
-        "tokens" | "tok"          => Command::ProcessTokens(args),
-        "ast" if args.is_empty()  => Command::Mode(OutputMode::Ast),
-        "ast"                      => Command::ProcessAst(args),
-        _                          => Command::Unknown(cmd),
+        "tokens" | "tok" => Command::ProcessTokens(args),
+        "ast" if args.is_empty() => Command::Mode(OutputMode::Ast),
+        "ast" => Command::ProcessAst(args),
+        _ => Command::Unknown(cmd),
     }
 }
 
@@ -275,6 +278,8 @@ fn show_help() {
 }
 
 fn process_markup(source: &str, mode: &OutputMode) -> String {
+    let reg = ChunkRegistry::default();
+    let ctx = assembler::RenderContext::new("inline", 0, &reg);
     match mode {
         OutputMode::Tokens => {
             let tokens: Vec<Token> = Token::lexer(source).filter_map(|t| t.ok()).collect();
@@ -286,7 +291,7 @@ fn process_markup(source: &str, mode: &OutputMode) -> String {
         }
         OutputMode::Html => {
             let doc = parser::parse(source);
-            let html = assembler::render_to_html(&doc);
+            let html = assembler::render_to_html(&doc, &ctx);
             highlight::highlight_html(&html)
         }
     }

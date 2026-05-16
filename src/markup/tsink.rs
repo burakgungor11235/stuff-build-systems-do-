@@ -6,6 +6,8 @@ pub struct TokenStream<'a> {
     lexer: logos::Lexer<'a, Token>,
     buf: VecDeque<(Token, &'a str)>,
     last_slice: &'a str,
+    line: u32,
+    column: u32,
 }
 
 impl<'a> TokenStream<'a> {
@@ -14,6 +16,24 @@ impl<'a> TokenStream<'a> {
             lexer: Token::lexer(source),
             buf: VecDeque::new(),
             last_slice: "",
+            line: 1,
+            column: 1,
+        }
+    }
+
+    /// Current (line, column) position in the source.
+    pub fn position(&self) -> (u32, u32) {
+        (self.line, self.column)
+    }
+
+    fn update_position(&mut self, slice: &str) {
+        for ch in slice.chars() {
+            if ch == '\n' {
+                self.line += 1;
+                self.column = 1;
+            } else {
+                self.column += 1;
+            }
         }
     }
 
@@ -42,7 +62,9 @@ impl<'a> TokenStream<'a> {
         if self.buf.is_empty() {
             match self.lexer.next()? {
                 Ok(tok) => {
-                    self.last_slice = self.lexer.slice();
+                    let slice = self.lexer.slice();
+                    self.update_position(slice);
+                    self.last_slice = slice;
                     Some(tok)
                 }
                 Err(_) => {
@@ -52,6 +74,7 @@ impl<'a> TokenStream<'a> {
             }
         } else {
             let (tok, slice) = self.buf.pop_front().unwrap();
+            self.update_position(slice);
             self.last_slice = slice;
             Some(tok)
         }
@@ -59,6 +82,25 @@ impl<'a> TokenStream<'a> {
 
     pub fn last_slice(&self) -> &str {
         self.last_slice
+    }
+
+    /// Consume the next token if it matches the expected token.
+    pub fn consume_if(&mut self, expected: &Token) -> Option<Token> {
+        if self.peek() == Some(expected) {
+            self.next()
+        } else {
+            None
+        }
+    }
+
+    /// Consume the next token, panicking with position info if it doesn't match.
+    /// Use when you've already verified the token via `peek()`.
+    pub fn expect(&mut self, expected: &Token) -> Token {
+        let (line, col) = self.position();
+        match self.next() {
+            Some(tok) => tok,
+            None => panic!("expected {:?} at line {}:{} but got EOF", expected, line, col),
+        }
     }
 
     pub fn skip_trivia(&mut self) {
@@ -96,26 +138,25 @@ impl<'a> TokenStream<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+mod lex_helpers {
     use super::*;
-    use logos::Logos;
 
     /// Collect all tokens with their source slices.
-    fn lex(input: &str) -> Vec<(Token, String)> {
+    pub fn lex(input: &str) -> Vec<(Token, String)> {
         let mut lexer = Token::lexer(input);
         let mut tokens = Vec::new();
         while let Some(result) = lexer.next() {
             let slice = lexer.slice().to_string();
             match result {
                 Ok(token) => tokens.push((token, slice)),
-                Err(()) => tokens.push((Token::Text(slice.clone()), slice)), // should never happen
+                Err(()) => tokens.push((Token::Text(slice.clone()), slice)),
             }
         }
         tokens
     }
 
     /// Lex and assert that the concatenated slices equal the original input.
-    fn assert_lossless(input: &str) {
+    pub fn assert_lossless(input: &str) {
         let mut lexer = Token::lexer(input);
         let mut reconstructed = String::new();
         while let Some(result) = lexer.next() {
@@ -125,8 +166,13 @@ mod tests {
         }
         assert_eq!(input, reconstructed, "Lossless round-trip failed");
     }
+}
 
-// Basic tokens
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::lex_helpers::{assert_lossless, lex};
+
     #[test]
     fn empty_input() {
         let tokens = lex("");
@@ -144,10 +190,10 @@ mod tests {
     fn text_single_word() {
         let tokens = lex("hello");
         assert_eq!(tokens.len(), 1);
-        match &tokens[0] {
-            (Token::Text(s), slice) => {
+        match &tokens[0].0 {
+            Token::Text(s) => {
                 assert_eq!(s, "hello");
-                assert_eq!(slice, "hello");
+                assert_eq!(&tokens[0].1, "hello");
             }
             _ => panic!("Expected Text"),
         }
@@ -162,8 +208,6 @@ mod tests {
 
     #[test]
     fn heading_levels() {
-        // Three headings with spaces/text between? Actually "#1 " is heading then whitespace then "#2" etc.
-        // Let's lex "#1 Title" to be precise.
         let tokens = lex("#1 Title");
         assert!(matches!(tokens[0].0, Token::Heading(1)));
         assert!(matches!(tokens[1].0, Token::Whitespace(_)));
@@ -173,9 +217,14 @@ mod tests {
     #[test]
     fn heading_no_level_zero() {
         let tokens = lex("#0 not a heading");
-        // `#0` should be Text because regex only matches #[1-9][0-9]*
-        print!("{:?}", tokens);
-        assert!(matches!(tokens[0].0, Token::Text(ref s) if s == "#0"));
+        assert!(matches!(tokens[0].0, Token::Hash));
+        assert!(matches!(tokens[1].0, Token::Digits(ref s) if s == "0"));
+        assert!(matches!(tokens[2].0, Token::Whitespace(_)));
+        assert!(matches!(tokens[3].0, Token::Text(ref s) if s == "not"));
+        assert!(matches!(tokens[4].0, Token::Whitespace(_)));
+        assert!(matches!(tokens[5].0, Token::Text(ref s) if s == "a"));
+        assert!(matches!(tokens[6].0, Token::Whitespace(_)));
+        assert!(matches!(tokens[7].0, Token::Text(ref s) if s == "heading"));
     }
 
     #[test]
@@ -256,11 +305,10 @@ mod tests {
         match &tokens[0].0 {
             Token::Directive(data) => {
                 assert_eq!(data.name, "foo");
-                assert_eq!(data.body, "bar baz"); // everything after '('
+                assert_eq!(data.body, "bar baz");
             }
             _ => panic!("Expected Directive with rest of input as body"),
         }
-        // Also verify losslessness
         assert_lossless("@foo(bar baz");
     }
 
@@ -278,47 +326,31 @@ mod tests {
     }
 
     #[test]
-    fn reference_named() {
-        let tokens = lex("&chunk");
-        match &tokens[0].0 {
-            Token::Reference(r) => assert_eq!(r, "chunk"),
-            _ => panic!("Expected Reference"),
-        }
+    fn ampersand_is_separate_token() {
+        let tokens = lex("&my_chunk");
+        assert!(matches!(tokens[0].0, Token::Ampersand));
+        assert!(matches!(tokens[1].0, Token::Text(ref s) if s == "my"));
+        assert!(matches!(tokens[2].0, Token::Underscore));
+        assert!(matches!(tokens[3].0, Token::Text(ref s) if s == "chunk"));
     }
 
     #[test]
-    fn reference_previous() {
-        let tokens = lex("&-1");
-        assert!(matches!(&tokens[0].0, Token::Reference(r) if r == "-1"));
+    fn dotdot_is_separate_token() {
+        let tokens = lex("..");
+        assert!(matches!(tokens[0].0, Token::DotDot));
     }
 
     #[test]
-    fn reference_next() {
-        let tokens = lex("&+2");
-        assert!(matches!(&tokens[0].0, Token::Reference(r) if r == "+2"));
+    fn comma_is_separate_token() {
+        let tokens = lex(",");
+        assert!(matches!(tokens[0].0, Token::Comma));
     }
 
     #[test]
-    fn reference_absolute() {
-        let tokens = lex("&42");
-        assert!(matches!(&tokens[0].0, Token::Reference(r) if r == "42"));
-    }
-
-    #[test]
-    fn ampersand_alone_is_text() {
-        let tokens = lex("&");
-        // Not part of a reference pattern, should be Text
-        assert!(matches!(tokens[0].0, Token::Text(ref s) if s == "&"));
-    }
-
-    #[test]
-    fn reference_then_dash_number() {
-        let tokens = lex("&-1-2");
-        // Should be Ref("-1"), then Minus, then Digits("2")
-        assert_eq!(tokens.len(), 3);
-        assert!(matches!(&tokens[0].0, Token::Reference(r) if r == "-1"));
-        assert!(matches!(tokens[1].0, Token::Minus));
-        assert!(matches!(&tokens[2].0, Token::Digits(d) if d == "2"));
+    fn hash_is_separate_token() {
+        let tokens = lex("#heading");
+        assert!(matches!(tokens[0].0, Token::Hash));
+        assert!(matches!(tokens[1].0, Token::Text(ref s) if s == "heading"));
     }
 
     #[test]
@@ -356,7 +388,6 @@ mod tests {
         let input = "![alt | url]";
         let tokens = lex(input);
         assert!(matches!(tokens[0].0, Token::ImageStart));
-        assert!(matches!(tokens[1].0, Token::Text(_))); // "alt"
         assert_lossless(input);
     }
 
@@ -369,7 +400,6 @@ mod tests {
     #[test]
     fn dot_is_separate() {
         let tokens = lex("1.");
-        // Digit "1" then Dot
         assert_eq!(tokens.len(), 2);
         assert!(matches!(&tokens[0].0, Token::Digits(d) if d == "1"));
         assert!(matches!(tokens[1].0, Token::Dot));
@@ -396,7 +426,6 @@ mod tests {
 
     #[test]
     fn comment_with_apostrophe() {
-        // The regex allows `'` not followed by `/`
         let tokens = lex("/' it's okay '/");
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].0, Token::Comment));
@@ -407,7 +436,6 @@ mod tests {
         let input = "/' hello";
         let tokens = lex(input);
         assert!(matches!(tokens[0].0, Token::IncompleteComment));
-        // remaining tokens: whitespace? Actually input: "/' hello" -> IncompleteComment, then Whitespace, then Text
         assert_eq!(tokens.len(), 3);
         assert!(matches!(tokens[1].0, Token::Whitespace(_)));
         assert!(matches!(tokens[2].0, Token::Text(ref s) if s == "hello"));
@@ -444,7 +472,6 @@ mod tests {
 
     #[test]
     fn image_start_priority_over_bang_bracket() {
-        // `![` should be ImageStart, not `!` + `[`
         let tokens = lex("![");
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].0, Token::ImageStart));
@@ -452,23 +479,19 @@ mod tests {
 
     #[test]
     fn directive_priority_over_simple() {
-        // @foo( should be Directive, not SimpleDirective + LParen
         let tokens = lex("@foo(");
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].0, Token::Directive(_)));
     }
 
     #[test]
-    fn reference_priority_over_ampersand_as_text() {
-        // &-1 must be Reference, not Text("&") + Minus + Digit
-        let tokens = lex("&-1");
-        assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0].0, Token::Reference(_)));
+    fn ampersand_alone_is_ampersand_token() {
+        let tokens = lex("&");
+        assert!(matches!(tokens[0].0, Token::Ampersand));
     }
 
     #[test]
     fn digits_not_text() {
-        // 123 should be Digits, not Text
         let tokens = lex("123");
         assert!(matches!(tokens[0].0, Token::Digits(_)));
     }
@@ -482,6 +505,7 @@ mod tests {
 
     #[test]
     fn lossless_round_trip_mixed() {
+        // Note: & is now its own token, so the full text still round-trips losslessly
         let input = "#1 Intro!\n\n*Bold* _italic_ ~strike~ &ref &-1\n\n---\n\n@dir(body)";
         assert_lossless(input);
     }

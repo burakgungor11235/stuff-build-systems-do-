@@ -50,8 +50,8 @@ pub enum Token {
     #[regex(r"@[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice()[1..].to_string(), priority = 3)]
     SimpleDirective(String),
 
-    #[regex(r"&([a-zA-Z_][a-zA-Z0-9_]*|[+-][0-9]+|[0-9]+)", |lex| lex.slice()[1..].to_string(), priority = 4)]
-    Reference(String),
+    // #[regex(r"&([a-zA-Z_][a-zA-Z0-9_]*|[+-][0-9]+|[0-9]+)", |lex| lex.slice()[1..].to_string(), priority = 4)]
+    // Reference(String),
 
     #[token(":<")]
     ExplicitChunkStart,
@@ -120,10 +120,21 @@ pub enum Token {
     #[token("]]", priority=5)]
     LinkEnd,
 
-    // Transclusion: !& followed by a non-whitespace index expression.
-    // The expression can contain letters, digits, #, ., .., -, +, (, ) and commas.
-    #[regex(r"!&[^\s\[\]\{\}<>*_\~@]+", |lex| lex.slice().to_string())]
-    Transclusion(String),
+    // Reference & Transclusion now parsed structurally in the parser.
+    // & and # are individual tokens so the parser can build
+    // structured RefExpr trees (Named, Relative, Range, FileBy*, etc.).
+    #[token("&")]
+    Ampersand,
+
+    #[token("#")]
+    Hash,
+
+    #[token("..")]
+    DotDot,
+
+    #[token(",")]
+    Comma,
+
     /// A complete, balanced comment: `/' ... '/`
     #[regex(r"/'([^']|'[^/])*'/", priority = 2)]
     Comment,
@@ -134,7 +145,7 @@ pub enum Token {
 
     /// Matches any single character not caught by the patterns above
     #[regex(
-        r"[^ \t\n@*_\~\[\]|<>^\{\}\(\)/.\+!\-]+",
+        r"[^ \t\n@*_\~\[\]|<>^\{\}\(\)/.\+!\-&#,]+",
         |lex| lex.slice().to_string(),
         priority = 1
     )]
@@ -147,6 +158,7 @@ impl Token {
             Token::Star => "*",
             Token::Underscore => "_",
             Token::Tilde => "~",
+            Token::Ampersand => "&",
             _ => unreachable!(),
         }
     }
