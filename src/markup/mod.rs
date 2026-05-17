@@ -3,4 +3,5 @@ pub mod parser;
 pub mod lexer;
 pub mod ast;
 pub mod tsink;
+pub mod semantic;
 

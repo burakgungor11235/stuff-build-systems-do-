@@ -2,7 +2,7 @@ mod highlight;
 mod input_highlighter;
 
 use crate::markup::{assembler, lexer::Token, parser};
-use crate::bs::registry::ChunkRegistry;
+use crate::markup::semantic::{ChunkGraph, RenderState};
 use logos::Logos;
 use rustyline::Editor;
 use std::collections::HashMap;
@@ -135,8 +135,9 @@ pub fn run() -> anyhow::Result<()> {
                     Command::ProcessHtml(name) => {
                         if let Some(content) = memory.get(&name) {
                             let doc = parser::parse(content);
-                            let reg = ChunkRegistry::default();
-                            let ctx = assembler::RenderContext::new(&name, 0, &reg);
+                            let graph = ChunkGraph::default();
+                            let render_state = RenderState::default();
+                            let ctx = assembler::RenderContext::new(&name, 0, &graph, &render_state);
                             let html = assembler::render_to_html(&doc, &ctx);
                             println!("{}", highlight::highlight_html(&html));
                         } else {
@@ -278,8 +279,9 @@ fn show_help() {
 }
 
 fn process_markup(source: &str, mode: &OutputMode) -> String {
-    let reg = ChunkRegistry::default();
-    let ctx = assembler::RenderContext::new("inline", 0, &reg);
+    let graph = ChunkGraph::default();
+    let render_state = RenderState::default();
+    let ctx = assembler::RenderContext::new("inline", 0, &graph, &render_state);
     match mode {
         OutputMode::Tokens => {
             let tokens: Vec<Token> = Token::lexer(source).filter_map(|t| t.ok()).collect();

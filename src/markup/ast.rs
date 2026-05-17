@@ -182,3 +182,78 @@ impl fmt::Debug for Inline {
         }
     }
 }
+
+pub fn inlines_to_plain_text(inlines: &[Inline]) -> String {
+    let mut s = String::new();
+    for inline in inlines {
+        match inline {
+            Inline::Text(t) => s.push_str(t),
+            Inline::Bold(inner)
+            | Inline::Italic(inner)
+            | Inline::Strikethrough(inner) => {
+                s.push_str(&inlines_to_plain_text(inner));
+            }
+            Inline::Reference(_) => {}
+            Inline::Link { .. } => {}
+            Inline::Transclusion(_) => {}
+        }
+    }
+    s
+}
+
+pub fn block_heading_and_text(block: &Block) -> Option<String> {
+    match block {
+        Block::Heading { content, .. } | Block::Paragraph(content) => {
+            let text = inlines_to_plain_text(content);
+            if text.is_empty() { None } else { Some(text) }
+        }
+        Block::List { items, .. } => {
+            items.first().map(|first| inlines_to_plain_text(first))
+        }
+        _ => None,
+    }
+}
+
+fn collect_from_inlines<'a>(inlines: &'a [Inline], refs: &mut Vec<&'a RefExpr>) {
+    for inline in inlines {
+        match inline {
+            Inline::Transclusion(expr) => refs.push(expr),
+            Inline::Bold(inner) | Inline::Italic(inner) | Inline::Strikethrough(inner) => {
+                collect_from_inlines(inner, refs);
+            }
+            Inline::Link { display, .. } => {
+                collect_from_inlines(display, refs);
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn extract_transclusion_refs(chunk: &Chunk) -> Vec<&RefExpr> {
+    let mut refs = Vec::new();
+    match chunk {
+        Chunk::Implicit { block, .. } => {
+            collect_from_inlines_for_chunk(block, &mut refs);
+        }
+        Chunk::Explicit { blocks, .. } => {
+            for block in blocks {
+                collect_from_inlines_for_chunk(block, &mut refs);
+            }
+        }
+    }
+    refs
+}
+
+fn collect_from_inlines_for_chunk<'a>(block: &'a Block, refs: &mut Vec<&'a RefExpr>) {
+    match block {
+        Block::Paragraph(inlines) | Block::Heading { content: inlines, .. } | Block::Blockquote { content: inlines, .. } => {
+            collect_from_inlines(inlines, refs);
+        }
+        Block::List { items, .. } => {
+            for item in items {
+                collect_from_inlines(item, refs);
+            }
+        }
+        _ => {}
+    }
+}

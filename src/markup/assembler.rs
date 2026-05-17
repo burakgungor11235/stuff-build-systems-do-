@@ -1,21 +1,23 @@
 use std::collections::HashSet;
 
 use crate::markup::ast::*;
-use crate::bs::registry::ChunkRegistry;
+use crate::markup::semantic::{ChunkGraph, RenderState};
 
 pub struct RenderContext<'a> {
     pub current_file: &'a str,
     pub current_chunk_index: usize,
-    pub registry: &'a ChunkRegistry,
+    pub graph: &'a ChunkGraph,
+    pub render_state: &'a RenderState,
     transclusion_stack: HashSet<(String, usize)>,
 }
 
 impl<'a> RenderContext<'a> {
-    pub fn new(current_file: &'a str, current_chunk_index: usize, registry: &'a ChunkRegistry) -> Self {
+    pub fn new(current_file: &'a str, current_chunk_index: usize, graph: &'a ChunkGraph, render_state: &'a RenderState) -> Self {
         Self {
             current_file,
             current_chunk_index,
-            registry,
+            graph,
+            render_state,
             transclusion_stack: HashSet::new(),
         }
     }
@@ -23,7 +25,7 @@ impl<'a> RenderContext<'a> {
     fn transclusion_ctx(&self, file: &str, idx: usize) -> Option<Self> {
         let key = (file.to_string(), idx);
         if self.transclusion_stack.contains(&key) {
-            None // cycle detected
+            None
         } else {
             let mut new = self.clone();
             new.transclusion_stack.insert(key);
@@ -37,7 +39,8 @@ impl<'a> Clone for RenderContext<'a> {
         Self {
             current_file: self.current_file,
             current_chunk_index: self.current_chunk_index,
-            registry: self.registry,
+            graph: self.graph,
+            render_state: self.render_state,
             transclusion_stack: self.transclusion_stack.clone(),
         }
     }
@@ -116,12 +119,11 @@ fn render_inline(inline: &Inline, ctx: &RenderContext) -> String {
         Inline::Strikethrough(inner) => format!("<del>{}</del>", render_inlines(inner, ctx)),
 
         Inline::Reference(expr) => {
-            match ctx.registry.resolve(expr, ctx.current_file, ctx.current_chunk_index) {
+            match ctx.graph.resolve_ref(expr, ctx.current_file, ctx.current_chunk_index) {
                 Some(target) => {
-                    let anchor = &target.anchor_id;
-                    let title = target.first_inline_text.as_deref().unwrap_or("");
+                    let anchor = target.anchor_id();
+                    let title = target.first_inline_text.map(|id| ctx.graph.string(id)).unwrap_or("");
                     match expr {
-                        // For heading ranges, render as anchor link to the heading
                         RefExpr::HeadingRange(_heading) => {
                             format!("<a href=\"#{anchor}\">{title}</a>")
                         }
@@ -137,7 +139,7 @@ fn render_inline(inline: &Inline, ctx: &RenderContext) -> String {
         }
 
         Inline::Transclusion(expr) => {
-            let targets = ctx.registry.resolve_transclusion(expr, ctx.current_file, ctx.current_chunk_index);
+            let targets = ctx.graph.resolve_transclusion(expr, ctx.current_file, ctx.current_chunk_index);
             if targets.is_empty() {
                 format!("<!-- unresolved transclusion: {:?} -->", expr)
             } else {
@@ -145,8 +147,8 @@ fn render_inline(inline: &Inline, ctx: &RenderContext) -> String {
                 for target in targets {
                     if ctx.transclusion_ctx(ctx.current_file, target.index).is_none() {
                         html.push_str("<!-- cyclic transclusion detected -->");
-                    } else {
-                        html.push_str(&target.html);
+                    } else if let Some(chunk_html) = ctx.render_state.get(target.id) {
+                        html.push_str(chunk_html);
                         html.push('\n');
                     }
                 }
@@ -175,22 +177,22 @@ fn escape_html(s: &str) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::bs::registry::{ChunkRegistry};
-    use crate::bs::registry::ChunkInfo;
+    use crate::markup::semantic::{ChunkGraph, RenderState};
 
-    fn empty_registry() -> ChunkRegistry {
-        ChunkRegistry::default()
+    fn empty_graph() -> ChunkGraph {
+        ChunkGraph::default()
     }
 
-    fn make_ctx<'a>(file: &'a str, idx: usize, reg: &'a ChunkRegistry) -> RenderContext<'a> {
-        RenderContext::new(file, idx, reg)
+    fn make_ctx<'a>(file: &'a str, idx: usize, graph: &'a ChunkGraph, render_state: &'a RenderState) -> RenderContext<'a> {
+        RenderContext::new(file, idx, graph, render_state)
     }
 
 #[test]
     fn empty_document_renders_empty() {
         let doc = Document { chunks: vec![] };
-        let reg = empty_registry();
-        let ctx = make_ctx("test.stuff", 0, &reg);
+        let graph = empty_graph();
+        let render_state = RenderState::default();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
         assert_eq!(render_to_html(&doc, &ctx), "");
     }
 
@@ -202,8 +204,9 @@ mod test {
                 block: Block::Paragraph(vec![Inline::Text("Hello".into())]),
             }],
         };
-        let reg = empty_registry();
-        let ctx = make_ctx("test.stuff", 0, &reg);
+        let graph = empty_graph();
+        let render_state = RenderState::default();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
         assert_eq!(render_to_html(&doc, &ctx), "<p>Hello</p>\n");
     }
 
@@ -218,8 +221,9 @@ mod test {
                 },
             }],
         };
-        let reg = empty_registry();
-        let ctx = make_ctx("test.stuff", 0, &reg);
+        let graph = empty_graph();
+        let render_state = RenderState::default();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
         assert_eq!(render_to_html(&doc, &ctx), "<h3>Title</h3>\n");
     }
 
@@ -235,8 +239,9 @@ mod test {
                 ]),
             }],
         };
-        let reg = empty_registry();
-        let ctx = make_ctx("test.stuff", 0, &reg);
+        let graph = empty_graph();
+        let render_state = RenderState::default();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
         assert_eq!(
             render_to_html(&doc, &ctx),
             "<p><strong>bold</strong> and <em>italic</em></p>\n"
@@ -251,8 +256,9 @@ mod test {
                 block: Block::Paragraph(vec![Inline::Text("<script>".into())]),
             }],
         };
-        let reg = empty_registry();
-        let ctx = make_ctx("test.stuff", 0, &reg);
+        let graph = empty_graph();
+        let render_state = RenderState::default();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
         assert_eq!(render_to_html(&doc, &ctx), "<p>&lt;script&gt;</p>\n");
     }
 
@@ -267,8 +273,9 @@ mod test {
                 },
             }],
         };
-        let reg = empty_registry();
-        let ctx = make_ctx("test.stuff", 0, &reg);
+        let graph = empty_graph();
+        let render_state = RenderState::default();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
         assert_eq!(render_to_html(&doc, &ctx), "<img src=\"test.png\" alt=\"\" />");
     }
 
@@ -286,8 +293,9 @@ mod test {
                 },
             }],
         };
-        let reg = empty_registry();
-        let ctx = make_ctx("test.stuff", 0, &reg);
+        let graph = empty_graph();
+        let render_state = RenderState::default();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
         assert_eq!(
             render_to_html(&doc, &ctx),
             "<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n"
@@ -305,15 +313,16 @@ mod test {
                 ],
             }],
         };
-        let reg = empty_registry();
-        let ctx = make_ctx("test.stuff", 0, &reg);
+        let graph = empty_graph();
+        let render_state = RenderState::default();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
         let html = render_to_html(&doc, &ctx);
         assert!(html.contains("<p>inside</p>"));
         assert!(html.contains("<hr>"));
     }
 
     #[test]
-    fn reference_unresolved_with_empty_registry() {
+    fn reference_unresolved_with_empty_graph() {
         let doc = Document {
             chunks: vec![Chunk::Implicit {
                 name: None,
@@ -323,22 +332,24 @@ mod test {
                 ]),
             }],
         };
-        let reg = empty_registry();
-        let ctx = make_ctx("test.stuff", 0, &reg);
+        let graph = empty_graph();
+        let render_state = RenderState::default();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
         let html = render_to_html(&doc, &ctx);
         assert!(html.contains("unresolved ref"));
     }
 
     #[test]
-    fn transclusion_unresolved_with_empty_registry() {
+    fn transclusion_unresolved_with_empty_graph() {
         let doc = Document {
             chunks: vec![Chunk::Implicit {
                 name: None,
                 block: Block::Paragraph(vec![Inline::Transclusion(RefExpr::Named("missing".into()))]),
             }],
         };
-        let reg = empty_registry();
-        let ctx = make_ctx("test.stuff", 0, &reg);
+        let graph = empty_graph();
+        let render_state = RenderState::default();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
         let html = render_to_html(&doc, &ctx);
         assert!(html.contains("unresolved transclusion"));
     }
@@ -354,8 +365,9 @@ mod test {
                 },
             }],
         };
-        let reg = empty_registry();
-        let ctx = make_ctx("test.stuff", 0, &reg);
+        let graph = empty_graph();
+        let render_state = RenderState::default();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
         let html = render_to_html(&doc, &ctx);
         assert!(html.contains("<!-- @foo(arg1) -->"));
     }
