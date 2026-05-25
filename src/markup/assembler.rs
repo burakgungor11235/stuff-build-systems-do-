@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use tracing::warn;
 
 use crate::markup::ast::*;
 use crate::markup::semantic::{ChunkGraph, RenderState};
@@ -8,41 +8,30 @@ pub struct RenderContext<'a> {
     pub current_chunk_index: usize,
     pub graph: &'a ChunkGraph,
     pub render_state: &'a RenderState,
-    transclusion_stack: HashSet<(String, usize)>,
 }
 
 impl<'a> RenderContext<'a> {
-    pub fn new(current_file: &'a str, current_chunk_index: usize, graph: &'a ChunkGraph, render_state: &'a RenderState) -> Self {
+    pub fn new(
+        current_file: &'a str,
+        current_chunk_index: usize,
+        graph: &'a ChunkGraph,
+        render_state: &'a RenderState,
+    ) -> Self {
         Self {
             current_file,
             current_chunk_index,
             graph,
             render_state,
-            transclusion_stack: HashSet::new(),
         }
     }
 
-    fn transclusion_ctx(&self, file: &str, idx: usize) -> Option<Self> {
-        let key = (file.to_string(), idx);
-        if self.transclusion_stack.contains(&key) {
-            None
-        } else {
-            let mut new = self.clone();
-            new.transclusion_stack.insert(key);
-            Some(new)
-        }
-    }
-}
-
-impl<'a> Clone for RenderContext<'a> {
-    fn clone(&self) -> Self {
-        Self {
-            current_file: self.current_file,
-            current_chunk_index: self.current_chunk_index,
-            graph: self.graph,
-            render_state: self.render_state,
-            transclusion_stack: self.transclusion_stack.clone(),
-        }
+    pub fn for_chunk(
+        rel_path: &'a str,
+        chunk_idx: usize,
+        graph: &'a ChunkGraph,
+        state: &'a RenderState,
+    ) -> Self {
+        Self::new(rel_path, chunk_idx, graph, state)
     }
 }
 
@@ -55,16 +44,7 @@ pub fn render_to_html(doc: &Document, ctx: &RenderContext) -> String {
 }
 
 pub fn render_chunk(chunk: &Chunk, ctx: &RenderContext) -> String {
-    match chunk {
-        Chunk::Implicit { block, .. } => render_block(block, ctx),
-        Chunk::Explicit { blocks, .. } => {
-            let mut s = String::new();
-            for b in blocks {
-                s.push_str(&render_block(b, ctx));
-            }
-            s
-        }
-    }
+    chunk.blocks().map(|b| render_block(b, ctx)).collect()
 }
 
 fn render_block(block: &Block, ctx: &RenderContext) -> String {
@@ -83,7 +63,8 @@ fn render_block(block: &Block, ctx: &RenderContext) -> String {
         }
         Block::HorizontalRule => "<hr>\n".to_string(),
         Block::Image { alt, url } => {
-            let alt_text = render_inlines(alt, ctx);
+            let alt_text = escape_attr(inlines_to_plain_text(alt).trim());
+            let url = url.trim();
             format!("<img src=\"{url}\" alt=\"{alt_text}\" />")
         }
         Block::Directive { name, body } => {
@@ -108,7 +89,11 @@ fn render_block(block: &Block, ctx: &RenderContext) -> String {
 }
 
 fn render_inlines(inlines: &[Inline], ctx: &RenderContext) -> String {
-    inlines.iter().map(|i| render_inline(i, ctx)).collect()
+    let mut result = String::with_capacity(inlines.len() * 32);
+    for inline in inlines {
+        result.push_str(&render_inline(inline, ctx));
+    }
+    result
 }
 
 fn render_inline(inline: &Inline, ctx: &RenderContext) -> String {
@@ -119,39 +104,47 @@ fn render_inline(inline: &Inline, ctx: &RenderContext) -> String {
         Inline::Strikethrough(inner) => format!("<del>{}</del>", render_inlines(inner, ctx)),
 
         Inline::Reference(expr) => {
-            match ctx.graph.resolve_ref(expr, ctx.current_file, ctx.current_chunk_index) {
+            match ctx
+                .graph
+                .resolve_ref(expr, ctx.current_file, ctx.current_chunk_index)
+            {
                 Some(target) => {
                     let anchor = target.anchor_id();
-                    let title = target.first_inline_text.map(|id| ctx.graph.string(id)).unwrap_or("");
-                    match expr {
-                        RefExpr::HeadingRange(_heading) => {
-                            format!("<a href=\"#{anchor}\">{title}</a>")
-                        }
-                        _ => {
-                            format!("<a href=\"#{anchor}\">{title}</a>")
-                        }
-                    }
+                    let title = target
+                        .first_inline_text
+                        .map(|id| ctx.graph.string(id).to_string())
+                        .or_else(|| {
+                            ctx.render_state
+                                .get_inlines(target.id)
+                                .map(inlines_to_plain_text)
+                        })
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or_else(|| format!("#{}", anchor));
+                    format!("<a href=\"#{anchor}\">{}</a>", escape_html(&title))
                 }
                 None => {
+                    warn!("unresolved ref: {:?}", expr);
                     format!("<!-- unresolved ref: {:?} -->", expr)
                 }
             }
         }
 
         Inline::Transclusion(expr) => {
-            let targets = ctx.graph.resolve_transclusion(expr, ctx.current_file, ctx.current_chunk_index);
+            let targets =
+                ctx.graph
+                    .resolve_transclusion(expr, ctx.current_file, ctx.current_chunk_index);
             if targets.is_empty() {
+                warn!("unresolved transclusion: {:?}", expr);
                 format!("<!-- unresolved transclusion: {:?} -->", expr)
             } else {
                 let mut html = String::new();
-                for target in targets {
-                    if ctx.transclusion_ctx(ctx.current_file, target.index).is_none() {
-                        html.push_str("<!-- cyclic transclusion detected -->");
-                    } else if let Some(chunk_html) = ctx.render_state.get(target.id) {
-                        html.push_str(chunk_html);
-                        html.push('\n');
+
+                targets.into_iter().for_each(|target| {
+                    if let Some(chunk_html) = ctx.render_state.get(target.id) {
+                        html.push_str(strip_block_tags(chunk_html));
                     }
-                }
+                });
+
                 html
             }
         }
@@ -164,14 +157,91 @@ fn render_inline(inline: &Inline, ctx: &RenderContext) -> String {
 }
 
 fn escape_attr(s: &str) -> String {
-    s.replace('&', "&amp;")
-     .replace('"', "&quot;")
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => result.push_str("&amp;"),
+            '<' => result.push_str("&lt;"),
+            '>' => result.push_str("&gt;"),
+            '"' => result.push_str("&quot;"),
+            _ => result.push(c),
+        }
+    }
+    result
 }
 
 fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => result.push_str("&amp;"),
+            '<' => result.push_str("&lt;"),
+            '>' => result.push_str("&gt;"),
+            _ => result.push(c),
+        }
+    }
+    result
+}
+
+// still not sure if this is a duct tape
+fn strip_block_tags(mut html: &str) -> &str {
+    html = html.trim();
+    let open_tags = [
+        "<p>",
+        "<h1>",
+        "<h2>",
+        "<h3>",
+        "<h4>",
+        "<h5>",
+        "<h6>",
+        "<blockquote>",
+        "<ul>",
+        "<ol>",
+    ];
+    let close_tags = [
+        "</p>",
+        "</h1>",
+        "</h2>",
+        "</h3>",
+        "</h4>",
+        "</h5>",
+        "</h6>",
+        "</blockquote>",
+        "</ul>",
+        "</ol>",
+    ];
+    let self_closing = ["<hr>"];
+    loop {
+        let old_len = html.len();
+        for tag in &open_tags {
+            if html.starts_with(tag) {
+                html = &html[tag.len()..];
+                break;
+            }
+        }
+        for tag in &self_closing {
+            if html.starts_with(tag) {
+                html = &html[tag.len()..];
+                break;
+            }
+        }
+        for tag in &close_tags {
+            if html.ends_with(tag) {
+                html = &html[..html.len() - tag.len()];
+                break;
+            }
+        }
+        if html.ends_with('\n') {
+            html = &html[..html.len() - 1];
+        }
+        if html.is_empty() {
+            break;
+        }
+        if html.len() == old_len {
+            break;
+        }
+    }
+    html
 }
 
 #[cfg(test)]
@@ -183,11 +253,16 @@ mod test {
         ChunkGraph::default()
     }
 
-    fn make_ctx<'a>(file: &'a str, idx: usize, graph: &'a ChunkGraph, render_state: &'a RenderState) -> RenderContext<'a> {
+    fn make_ctx<'a>(
+        file: &'a str,
+        idx: usize,
+        graph: &'a ChunkGraph,
+        render_state: &'a RenderState,
+    ) -> RenderContext<'a> {
         RenderContext::new(file, idx, graph, render_state)
     }
 
-#[test]
+    #[test]
     fn empty_document_renders_empty() {
         let doc = Document { chunks: vec![] };
         let graph = empty_graph();
@@ -276,7 +351,10 @@ mod test {
         let graph = empty_graph();
         let render_state = RenderState::default();
         let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
-        assert_eq!(render_to_html(&doc, &ctx), "<img src=\"test.png\" alt=\"\" />");
+        assert_eq!(
+            render_to_html(&doc, &ctx),
+            "<img src=\"test.png\" alt=\"\" />"
+        );
     }
 
     #[test]
@@ -344,7 +422,9 @@ mod test {
         let doc = Document {
             chunks: vec![Chunk::Implicit {
                 name: None,
-                block: Block::Paragraph(vec![Inline::Transclusion(RefExpr::Named("missing".into()))]),
+                block: Block::Paragraph(vec![Inline::Transclusion(RefExpr::Named(
+                    "missing".into(),
+                ))]),
             }],
         };
         let graph = empty_graph();
@@ -371,5 +451,4 @@ mod test {
         let html = render_to_html(&doc, &ctx);
         assert!(html.contains("<!-- @foo(arg1) -->"));
     }
-
-    }
+}

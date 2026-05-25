@@ -21,3 +21,6 @@ clap = { version = "4.0", features = ["derive"] }
 logos = "0.16.1"
 ansi_term = "0.12"
 rustyline = "14"
+
+[dev-dependencies]
+proptest = "1"

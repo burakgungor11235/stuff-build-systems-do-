@@ -2,7 +2,6 @@ mod arena;
 mod resolve;
 mod types;
 
-pub mod cache;
 pub mod deps;
 pub mod images;
 pub mod plugin;
@@ -16,10 +15,18 @@ pub use types::{Chunk, ChunkId, DocId, Document, StringId};
 use crate::markup::ast;
 use rustc_hash::FxHashMap;
 
+const SOURCE_EXT: &str = ".stuff";
+
+#[inline]
+fn normalize_path(p: &str) -> &str {
+    p.strip_suffix(SOURCE_EXT).unwrap_or(p)
+}
+
 pub struct ChunkGraph {
     chunks: Vec<Chunk>,
     docs: Vec<Document>,
     strings: StringArena,
+    path_to_docid: FxHashMap<String, DocId>,
 }
 
 impl Default for ChunkGraph {
@@ -28,6 +35,7 @@ impl Default for ChunkGraph {
             chunks: Vec::new(),
             docs: Vec::new(),
             strings: StringArena::with_capacity(64),
+            path_to_docid: FxHashMap::default(),
         }
     }
 }
@@ -35,6 +43,7 @@ impl Default for ChunkGraph {
 #[derive(Default)]
 pub struct RenderState {
     chunk_html: FxHashMap<ChunkId, String>,
+    chunk_inlines: FxHashMap<ChunkId, Vec<ast::Inline>>,
 }
 
 impl RenderState {
@@ -45,6 +54,14 @@ impl RenderState {
     pub fn get(&self, chunk_id: ChunkId) -> Option<&str> {
         self.chunk_html.get(&chunk_id).map(|s| s.as_str())
     }
+
+    pub fn set_inlines(&mut self, chunk_id: ChunkId, inlines: Vec<ast::Inline>) {
+        self.chunk_inlines.insert(chunk_id, inlines);
+    }
+
+    pub fn get_inlines(&self, chunk_id: ChunkId) -> Option<&[ast::Inline]> {
+        self.chunk_inlines.get(&chunk_id).map(|v| v.as_slice())
+    }
 }
 
 impl ChunkGraph {
@@ -53,6 +70,7 @@ impl ChunkGraph {
         let mut chunks = Vec::new();
         let mut documents = Vec::new();
         let strings = StringArena::with_capacity(16);
+        let mut path_to_docid = FxHashMap::default();
 
         for (doc_idx, (rel_path, chunk_ids)) in docs.into_iter().enumerate() {
             let doc_id = DocId(doc_idx as u32);
@@ -69,9 +87,11 @@ impl ChunkGraph {
                     first_inline_text: None,
                 });
             }
+            let normalized = normalize_path(&rel_path).to_string();
+            path_to_docid.insert(normalized.clone(), doc_id);
             documents.push(Document {
                 id: doc_id,
-                rel_path,
+                rel_path: normalized,
                 chunk_ids: mapped_ids,
             });
         }
@@ -80,6 +100,7 @@ impl ChunkGraph {
             chunks,
             docs: documents,
             strings,
+            path_to_docid,
         }
     }
 
@@ -91,42 +112,50 @@ impl ChunkGraph {
             let cid = ChunkId(self.chunks.len() as u32);
             chunk_ids.push(cid);
 
-            let (name, heading, first_inline_text) = match chunk {
-                ast::Chunk::Implicit { name, block } => {
-                    let (h, fit) = extract_heading_and_text(&mut self.strings, block);
-                    (name.as_deref().map(|s| self.strings.intern(s)), h, fit)
+            let chunk_name = match chunk {
+                ast::Chunk::Implicit { name, .. } => name.as_deref().map(|s| self.strings.intern(s)),
+                ast::Chunk::Explicit { name, .. } => Some(self.strings.intern(name)),
+            };
+
+            let first_block = chunk.blocks().next();
+            let (heading, first_inline_text) = match first_block {
+                Some(block) if block.is_heading() => {
+                    let id = block.heading_and_text().map(|t| self.strings.intern(&t));
+                    (id, id)
                 }
-                ast::Chunk::Explicit { name, blocks } => {
-                    let first_block = blocks.first();
-                    let (h, fit) = first_block
-                        .map(|b| extract_heading_and_text(&mut self.strings, b))
-                        .unwrap_or((None, None));
-                    (Some(self.strings.intern(name)), h, fit)
+                Some(block) => {
+                    let id = block.heading_and_text().map(|t| self.strings.intern(&t));
+                    (None, id)
                 }
+                None => (None, None),
             };
 
             self.chunks.push(Chunk {
                 id: cid,
                 doc: id,
                 index: chunk_idx,
-                name,
+                name: chunk_name,
                 heading,
                 first_inline_text,
             });
         }
 
+        let normalized = normalize_path(&rel_path).to_string();
+        self.path_to_docid.insert(normalized.clone(), id);
         self.docs.push(Document {
             id,
-            rel_path,
+            rel_path: normalized,
             chunk_ids,
         });
         id
     }
 
+    #[must_use]
     pub fn chunk(&self, id: ChunkId) -> Option<&Chunk> {
         self.chunks.get(id.0 as usize)
     }
 
+    #[must_use]
     pub fn chunks_in(&self, doc_id: DocId) -> &[ChunkId] {
         self.docs
             .get(doc_id.0 as usize)
@@ -134,20 +163,13 @@ impl ChunkGraph {
             .unwrap_or(&[])
     }
 
+    #[must_use]
     pub fn doc_by_path(&self, rel_path: &str) -> Option<DocId> {
-        self.docs
-            .iter()
-            .find(|d| {
-                d.rel_path == rel_path
-                    || d.rel_path == format!("{}.stuff", rel_path)
-                    || d.rel_path
-                        .strip_suffix(".stuff")
-                        .map(|s| s == rel_path)
-                        .unwrap_or(false)
-            })
-            .map(|d| d.id)
+        let normalized = normalize_path(rel_path);
+        self.path_to_docid.get(normalized).copied()
     }
 
+    #[must_use]
     pub fn resolve_ref(
         &self,
         expr: &ast::RefExpr,
@@ -157,6 +179,7 @@ impl ChunkGraph {
         resolve_ref(self, expr, current_file, current_idx)
     }
 
+    #[must_use]
     pub fn resolve_transclusion(
         &self,
         expr: &ast::RefExpr,
@@ -166,20 +189,25 @@ impl ChunkGraph {
         resolve_transclusion(self, expr, current_file, current_idx)
     }
 
+    #[must_use]
     pub fn string(&self, id: StringId) -> &str {
         self.strings.get(id)
     }
 
+    #[must_use]
     pub fn get_chunks(&self, file: &str) -> Option<&[ChunkId]> {
-        self.doc_by_path(file).map(|id| self.chunks_in(id))
+        let normalized = normalize_path(file);
+        self.path_to_docid.get(normalized).map(|&id| self.chunks_in(id))
     }
 
+    #[must_use]
     pub fn has_name(&self, cid: ChunkId, name: &str) -> bool {
         self.chunk(cid)
             .and_then(|c| c.name.map(|id| self.strings.get(id) == name))
             .unwrap_or(false)
     }
 
+    #[must_use]
     pub fn heading_matches(&self, cid: ChunkId, heading: &str) -> bool {
         self.chunk(cid)
             .and_then(|c| {
@@ -222,6 +250,7 @@ impl ChunkGraph {
         // writing loops are my passion.
     }
 
+    #[must_use]
     pub fn normalize_idx(&self, idx: i32, len: i32) -> Option<i32> {
         if idx >= 0 && idx < len {
             Some(idx)
@@ -229,23 +258,5 @@ impl ChunkGraph {
             warn!("something has gone verry wrong");
             None
         }
-    }
-}
-
-fn extract_heading_and_text(
-    strings: &mut StringArena,
-    block: &ast::Block,
-) -> (Option<StringId>, Option<StringId>) {
-    match block {
-        ast::Block::Heading { .. } => ast::block_heading_and_text(block)
-            .map(|text| {
-                let id = strings.intern(&text);
-                (Some(id), Some(id))
-            })
-            .unwrap_or((None, None)),
-        ast::Block::Paragraph(_) | ast::Block::List { .. } => ast::block_heading_and_text(block)
-            .map(|text| (None, Some(strings.intern(&text))))
-            .unwrap_or((None, None)),
-        _ => (None, None),
     }
 }

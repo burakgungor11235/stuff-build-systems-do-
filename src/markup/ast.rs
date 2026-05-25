@@ -41,6 +41,23 @@ pub enum Chunk {
     },
 }
 
+impl Chunk {
+    pub fn blocks(&self) -> Box<dyn Iterator<Item = &Block> + '_> {
+        match self {
+            Chunk::Implicit { block, .. } => Box::new(std::iter::once(block)),
+            Chunk::Explicit { blocks, .. } => Box::new(blocks.iter()),
+        }
+    }
+    pub fn size_upper_estimate(&self) -> usize {
+        self.blocks().map(|s| s.size_upper_estimate()).sum()
+    }
+    /// Inline content suitable for inline transclusion.
+    /// For multi-block chunks, uses the first block's inline content.
+    pub fn inline_content(&self) -> Vec<Inline> {
+        self.blocks().next().map(|b| b.inline_content()).unwrap_or_default()
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub enum Block {
     Paragraph(Vec<Inline>),
@@ -65,6 +82,66 @@ pub enum Block {
         items: Vec<Vec<Inline>>,
         ordered: bool,
     }, // each item is a sequence of inlines
+}
+
+impl Block {
+    pub fn heading_and_text(&self) -> Option<String> {
+        match self {
+            Block::Heading { content, .. } | Block::Paragraph(content) => {
+                let text = inlines_to_plain_text(content);
+                if text.is_empty() { None } else { Some(text) }
+            }
+            Block::Blockquote { content, .. } => {
+                let text = inlines_to_plain_text(content);
+                if text.is_empty() { None } else { Some(text) }
+            }
+            Block::List { items, .. } => items
+                .first()
+                .map(|first| inlines_to_plain_text(first)),
+            Block::Image { alt, .. } => {
+                let text = inlines_to_plain_text(alt);
+                if text.is_empty() { None } else { Some(text) }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn is_heading(&self) -> bool {
+        matches!(self, Block::Heading { .. })
+    }
+
+    /// Inline content for inline transclusion purposes.
+    pub fn inline_content(&self) -> Vec<Inline> {
+        match self {
+            Block::Paragraph(inlines)
+            | Block::Heading { content: inlines, .. }
+            | Block::Blockquote { content: inlines, .. } => inlines.to_vec(),
+            Block::List { items, .. } => items.first().cloned().unwrap_or_default(),
+            Block::Image { alt, .. } => alt.to_vec(),
+            Block::HorizontalRule | Block::Directive { .. } => vec![],
+        }
+    }
+
+    // used to make vec::new() faster by allocating what we need (and more, it's a rough estimate)
+    // should be used for while iterating over a Chunk / Block
+    // NOTE: stuff like `Block::Image`'s  alt.len() is the size, don't expect string as something which is in the
+    // size.
+    // A fancy wrapper for the flattened lenght
+    pub fn size_upper_estimate(&self) -> usize {
+        match self {
+            Block::Paragraph(inlines)
+            | Block::Heading {
+                content: inlines, ..
+            }
+            | Block::Blockquote {
+                content: inlines, ..
+            } => inlines.len(),
+            Block::Image { alt, .. } => alt.len(),
+            Block::List { items, .. } => items.iter().map(|i| i.len()).sum(),
+            Block::Directive { .. } => 0,
+            Block::HorizontalRule => 0,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -96,9 +173,14 @@ impl fmt::Debug for Document {
     }
 }
 
-impl Document {
-    pub fn len(&self) -> usize {
-        self.chunks.len()
+impl RefExpr {
+    pub fn extract_file_name(&self) -> String {
+        match self {
+            RefExpr::Named(n) => n.clone(),
+            RefExpr::Relative(n) => n.to_string(),
+            RefExpr::Absolute(n) => n.to_string(),
+            _ => String::new(),
+        }
     }
 }
 
@@ -188,9 +270,7 @@ pub fn inlines_to_plain_text(inlines: &[Inline]) -> String {
     for inline in inlines {
         match inline {
             Inline::Text(t) => s.push_str(t),
-            Inline::Bold(inner)
-            | Inline::Italic(inner)
-            | Inline::Strikethrough(inner) => {
+            Inline::Bold(inner) | Inline::Italic(inner) | Inline::Strikethrough(inner) => {
                 s.push_str(&inlines_to_plain_text(inner));
             }
             Inline::Reference(_) => {}
@@ -199,19 +279,6 @@ pub fn inlines_to_plain_text(inlines: &[Inline]) -> String {
         }
     }
     s
-}
-
-pub fn block_heading_and_text(block: &Block) -> Option<String> {
-    match block {
-        Block::Heading { content, .. } | Block::Paragraph(content) => {
-            let text = inlines_to_plain_text(content);
-            if text.is_empty() { None } else { Some(text) }
-        }
-        Block::List { items, .. } => {
-            items.first().map(|first| inlines_to_plain_text(first))
-        }
-        _ => None,
-    }
 }
 
 fn collect_from_inlines<'a>(inlines: &'a [Inline], refs: &mut Vec<&'a RefExpr>) {
@@ -230,23 +297,22 @@ fn collect_from_inlines<'a>(inlines: &'a [Inline], refs: &mut Vec<&'a RefExpr>) 
 }
 
 pub fn extract_transclusion_refs(chunk: &Chunk) -> Vec<&RefExpr> {
-    let mut refs = Vec::new();
-    match chunk {
-        Chunk::Implicit { block, .. } => {
-            collect_from_inlines_for_chunk(block, &mut refs);
-        }
-        Chunk::Explicit { blocks, .. } => {
-            for block in blocks {
-                collect_from_inlines_for_chunk(block, &mut refs);
-            }
-        }
+    let mut refs = Vec::with_capacity(chunk.size_upper_estimate());
+    for block in chunk.blocks() {
+        collect_from_inlines_for_chunk(block, &mut refs);
     }
     refs
 }
 
 fn collect_from_inlines_for_chunk<'a>(block: &'a Block, refs: &mut Vec<&'a RefExpr>) {
     match block {
-        Block::Paragraph(inlines) | Block::Heading { content: inlines, .. } | Block::Blockquote { content: inlines, .. } => {
+        Block::Paragraph(inlines)
+        | Block::Heading {
+            content: inlines, ..
+        }
+        | Block::Blockquote {
+            content: inlines, ..
+        } => {
             collect_from_inlines(inlines, refs);
         }
         Block::List { items, .. } => {

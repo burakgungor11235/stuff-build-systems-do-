@@ -1,5 +1,4 @@
 use rustc_hash::FxHashMap;
-use std::collections::hash_map::Entry;
 
 use super::types::StringId;
 
@@ -18,17 +17,16 @@ impl StringArena {
     }
 
     pub fn intern(&mut self, s: &str) -> StringId {
-        match self.index.entry(s.to_string()) {
-            Entry::Occupied(e) => *e.get(),
-            Entry::Vacant(e) => {
-                let id = StringId(self.strings.len() as u32);
-                self.strings.push(s.to_string());
-                e.insert(id);
-                id
-            }
+        if let Some(&id) = self.index.get(s) {
+            return id;
         }
+        let id = StringId(self.strings.len() as u32);
+        self.strings.push(s.to_string());
+        self.index.insert(s.to_string(), id);
+        id
     }
 
+    #[must_use]
     pub fn get(&self, id: StringId) -> &str {
         &self.strings[id.0 as usize]
     }

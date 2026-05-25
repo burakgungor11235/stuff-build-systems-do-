@@ -1,16 +1,6 @@
 use crate::markup::{ast::*, lexer::Token, tsink::TokenStream};
+use crate::markup::ast::inlines_to_plain_text;
 use tracing::trace;
-
-macro_rules! file_name_from_ref {
-    ($base:expr) => {
-        match &$base {
-            RefExpr::Named(n) => n.clone(),
-            RefExpr::Relative(n) => n.to_string(),
-            RefExpr::Absolute(n) => n.to_string(),
-            _ => String::new(),
-        }
-    };
-}
 
 pub struct Parser<'a> {
     tokens: TokenStream<'a>,
@@ -439,7 +429,7 @@ impl<'a> Parser<'a> {
                     Some(Token::Digits(d)) => {
                         let idx_str = d.clone();
                         self.tokens.next();
-                        let result = RefExpr::FileByIndex(file_name_from_ref!(base), idx_str.parse::<usize>().unwrap_or(0));
+                        let result = RefExpr::FileByIndex(base.extract_file_name(), idx_str.parse::<usize>().unwrap_or(0));
                         trace!("parse_qualifier: file by index {:?}", result);
                         result
                     }
@@ -447,7 +437,7 @@ impl<'a> Parser<'a> {
                         let name = name.clone();
                         self.tokens.next();
                         let name = self.consume_text_component(name);
-                        let file_name = file_name_from_ref!(base);
+                        let file_name = base.extract_file_name();
                         let result = self.parse_file_with_heading(file_name, name);
                         trace!("parse_qualifier: file with heading {:?}", result);
                         result
@@ -455,7 +445,7 @@ impl<'a> Parser<'a> {
                     Some(Token::Hash) => {
                         self.tokens.expect(&Token::Hash);
                         let heading = self.parse_heading_text();
-                        let result = self.parse_post_heading_qualifier(file_name_from_ref!(base), heading);
+                        let result = self.parse_post_heading_qualifier(base.extract_file_name(), heading);
                         trace!("parse_qualifier: post heading (via .#) {:?}", result);
                         result
                     }
@@ -466,7 +456,7 @@ impl<'a> Parser<'a> {
             Some(Token::Hash) => {
                 self.tokens.expect(&Token::Hash);
                 let heading = self.parse_heading_text();
-                let result = self.parse_post_heading_qualifier(file_name_from_ref!(base), heading);
+                let result = self.parse_post_heading_qualifier(base.extract_file_name(), heading);
                 trace!("parse_qualifier: post heading (via #) {:?}", result);
                 result
             }
@@ -672,22 +662,6 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Flatten inline elements into a plain text string (used for image URLs, etc.)
-fn inlines_to_plain_text(inlines: &[Inline]) -> String {
-    let mut s = String::new();
-    for inline in inlines {
-        match inline {
-            Inline::Text(t) => s.push_str(t),
-            Inline::Bold(inner) | Inline::Italic(inner) | Inline::Strikethrough(inner) => {
-                s.push_str(&inlines_to_plain_text(inner));
-            }
-            Inline::Reference(_) => todo!(),
-            Inline::Link { .. } => todo!(),
-            Inline::Transclusion(_) => todo!(),
-        }
-    }
-    s
-}
 #[cfg(test)]
 mod tests {
     use super::*;

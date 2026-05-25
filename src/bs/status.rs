@@ -1,6 +1,4 @@
-use walkdir::WalkDir;
-
-use crate::bs::cache::{BuildCache, CacheStatus};
+use crate::bs::cas::Cas;
 use crate::bs::config::Manifest;
 
 pub struct Status {
@@ -20,119 +18,96 @@ impl Status {
         println!("  Output: {}", project.out_dir);
         println!("  Cache: {}", project.cache_dir);
 
-        let cache = BuildCache::load(project.cache_dir_path())?;
+        let cache_dir = project.cache_dir_path();
+        let cas = Cas::load(&cache_dir).unwrap_or_default();
         let src_dir = project.src_dir_path();
 
         let mut files_total = 0u32;
-        let mut files_up_to_date = 0u32;
-        let mut files_stale = 0u32;
-        let mut files_not_cached = 0u32;
+        let mut files_cached = 0u32;
+        let mut files_uncached = 0u32;
 
-        for entry in WalkDir::new(project.src_dir_path())
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map_or_else(|| false, |ext| ext == "md")
-            })
-        {
+        for entry in project.walk_source_files() {
             files_total += 1;
-            match cache.is_fresh(&src_dir, entry.path()) {
-                CacheStatus::UpToDate => files_up_to_date += 1,
-                CacheStatus::Stale => files_stale += 1,
-                CacheStatus::NotCached => files_not_cached += 1,
+            let rel_path = entry
+                .path()
+                .strip_prefix(&src_dir)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            if let Ok((_content, content_hash)) = Cas::read_and_hash(entry.path()) {
+                let key = Cas::compute_chunk_key(&rel_path, 0, &content_hash);
+                if cas.contains(&key) {
+                    files_cached += 1;
+                } else {
+                    files_uncached += 1;
+                }
+            } else {
+                files_uncached += 1;
             }
         }
 
         println!("-----------------------------------");
         println!(
-            "Files: {} total | {} up-to-date | {} stale | {} not-cached",
-            files_total, files_up_to_date, files_stale, files_not_cached
+            "Files: {} total | {} cached | {} uncached",
+            files_total, files_cached, files_uncached
         );
 
         if verbosity >= 1 {
             println!();
             let manifest_dir = &self.manifest.project.manifest_dir;
-            let src_dir = &self.manifest.project.src_dir;
-            let out_dir = &self.manifest.project.out_dir;
-            // Walk the source directory (relative to manifest directory)
-            let src_dir_abs = manifest_dir.join(src_dir);
-            for entry in WalkDir::new(&src_dir_abs)
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .map_or_else(|| false, |ext| ext == "md")
-                })
-            {
+            let src_dir_abs = project.src_dir_path();
+
+            // Writing the entire system was easier than this BS. 
+            for entry in project.walk_source_files() {
                 let source_path = entry.path();
-                // Get the path of the source file relative to the manifest directory
-                let source_rel = match source_path.strip_prefix(manifest_dir) {
-                    Ok(p) => p.to_string_lossy().to_string(),
-                    Err(_) => {
-                        // Fallback: should not happen if we walked from src_dir_abs which is inside manifest_dir
-                        source_path.to_string_lossy().to_string()
-                    }
-                };
-                // The relative path within the source directory (for constructing output path)
-                let rel_within_src = match source_path.strip_prefix(&src_dir_abs) {
-                    Ok(p) => p.to_string_lossy().to_string(),
-                    Err(_) => {
-                        // Fallback: use the whole source_rel (should not happen)
-                        source_rel.clone()
-                    }
-                };
-                // Expected output file relative to manifest directory: out_dir / rel_within_src with .html extension
-                let mut output_rel = std::path::PathBuf::from(out_dir);
-                output_rel.push(&rel_within_src);
-                output_rel.set_extension("html");
-                // Check if output file exists on disk: manifest_dir / output_rel
-                let output_exists = manifest_dir.join(&output_rel).exists();
+                let source_rel = source_path
+                    .strip_prefix(manifest_dir)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| source_path.to_string_lossy().to_string());
 
-                let status = cache.is_fresh(&manifest_dir.join(src_dir), source_path);
+                let rel_within_src = source_path
+                    .strip_prefix(&src_dir_abs)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
 
-                let color ;
-                let marker;
-                if output_exists {
-                    (color, marker) = match status {
-                        CacheStatus::UpToDate => ("\x1b[32m", "[+]"),
-                        CacheStatus::Stale => ("\x1b[33m", "[*]"),
-                        CacheStatus::NotCached => ("\x1b[31m", "[-]"), // this should be unreachable
-                    };
+                let output_path = project.output_path_for_source(&rel_within_src);
+                let output_exists = manifest_dir.join(&output_path).exists();
+
+                let is_cached = if let Ok((_content, content_hash)) = Cas::read_and_hash(source_path) {
+                    let key = Cas::compute_chunk_key(&rel_within_src, 0, &content_hash);
+                    cas.contains(&key)
                 } else {
-                    color = "\x1b[31m";
-                    marker = "[-]";
-                }
+                    false
+                };
 
-               
+                let (color, marker) = if output_exists && is_cached {
+                    ("\x1b[32m", "[+]")
+                } else if output_exists {
+                    ("\x1b[33m", "[*]")
+                } else {
+                    ("\x1b[31m", "[-]")
+                };
+
                 let reset = "\x1b[0m";
-
-                if output_exists {
-                    println!(
-                        "{}{}{} {} -> {}",
-                        color,
-                        marker,
-                        reset,
-                        source_rel,
-                        output_rel.to_string_lossy()
-                    );
-                } else {
-                    println!("{}{}{} {}", color, marker, reset, source_rel);
-                }
+                println!(
+                    "{}{}{} {} -> {}",
+                    color,
+                    marker,
+                    reset,
+                    source_rel,
+                    output_path.to_string_lossy()
+                );
             }
         }
 
         if verbosity >= 2 {
             println!();
-            println!("Cache contents:");
-            for (path, mtime) in &cache.entries {
-                println!("  {}: {}", path, mtime);
+            println!("CAS entries:");
+            for (key, meta) in cas.iter_entries() {
+                println!("  {}: {} bytes ({})", key, meta.size, meta.artifact_type);
             }
         }
 
         Ok(())
     }
 }
-
