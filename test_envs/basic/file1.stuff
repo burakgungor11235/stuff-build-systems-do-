@@ -2,7 +2,7 @@
 
 This is the *first* file in our test environment.
 
-Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.:>(NAME)
 
 > This is a blockquote with some _italic text_ inside it.
 > It demonstrates how blockquotes work with nested formatting.
@@ -14,3 +14,7 @@ Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor i
 - Strikethrough: ~deleted content~
 
 Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+
+!&NAME
+
+!&file5.my_named_chunk
