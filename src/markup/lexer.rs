@@ -52,7 +52,6 @@ pub enum Token {
 
     // #[regex(r"&([a-zA-Z_][a-zA-Z0-9_]*|[+-][0-9]+|[0-9]+)", |lex| lex.slice()[1..].to_string(), priority = 4)]
     // Reference(String),
-
     #[token(":<")]
     ExplicitChunkStart,
 
@@ -115,9 +114,9 @@ pub enum Token {
     RBracket,
     #[token("|")]
     Pipe,
-    #[token("[[", priority= 5)]
+    #[token("[[", priority = 5)]
     LinkStart,
-    #[token("]]", priority=5)]
+    #[token("]]", priority = 5)]
     LinkEnd,
 
     // Reference & Transclusion now parsed structurally in the parser.

@@ -1,11 +1,23 @@
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct ChunkId(pub u32);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct DocId(pub u32);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct StringId(pub u32);
+
+impl From<usize> for StringId {
+    fn from(n: usize) -> Self {
+        StringId(n as u32)
+    }
+}
+
+impl From<StringId> for usize {
+    fn from(id: StringId) -> Self {
+        id.0 as usize
+    }
+}
 
 #[derive(Clone)]
 pub struct Chunk {

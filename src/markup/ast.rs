@@ -54,7 +54,10 @@ impl Chunk {
     /// Inline content suitable for inline transclusion.
     /// For multi-block chunks, uses the first block's inline content.
     pub fn inline_content(&self) -> Vec<Inline> {
-        self.blocks().next().map(|b| b.inline_content()).unwrap_or_default()
+        self.blocks()
+            .next()
+            .map(|b| b.inline_content())
+            .unwrap_or_default()
     }
 }
 
@@ -89,18 +92,28 @@ impl Block {
         match self {
             Block::Heading { content, .. } | Block::Paragraph(content) => {
                 let text = inlines_to_plain_text(content);
-                if text.is_empty() { None } else { Some(text) }
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
             }
             Block::Blockquote { content, .. } => {
                 let text = inlines_to_plain_text(content);
-                if text.is_empty() { None } else { Some(text) }
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
             }
-            Block::List { items, .. } => items
-                .first()
-                .map(|first| inlines_to_plain_text(first)),
+            Block::List { items, .. } => items.first().map(|first| inlines_to_plain_text(first)),
             Block::Image { alt, .. } => {
                 let text = inlines_to_plain_text(alt);
-                if text.is_empty() { None } else { Some(text) }
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
             }
             _ => None,
         }
@@ -114,8 +127,12 @@ impl Block {
     pub fn inline_content(&self) -> Vec<Inline> {
         match self {
             Block::Paragraph(inlines)
-            | Block::Heading { content: inlines, .. }
-            | Block::Blockquote { content: inlines, .. } => inlines.to_vec(),
+            | Block::Heading {
+                content: inlines, ..
+            }
+            | Block::Blockquote {
+                content: inlines, ..
+            } => inlines.to_vec(),
             Block::List { items, .. } => items.first().cloned().unwrap_or_default(),
             Block::Image { alt, .. } => alt.to_vec(),
             Block::HorizontalRule | Block::Directive { .. } => vec![],
@@ -153,6 +170,10 @@ pub enum Inline {
     Reference(RefExpr),
     Link {
         target: String,
+        display: Vec<Inline>,
+    },
+    WikiLink {
+        page_id: usize,
         display: Vec<Inline>,
     },
     Transclusion(RefExpr),
@@ -259,6 +280,9 @@ impl fmt::Debug for Inline {
             Inline::Link { target, display } => {
                 write!(f, "Link({:?} -> {:?})", target, display)
             }
+            Inline::WikiLink { page_id, display } => {
+                write!(f, "WikiLink(id={} -> {:?})", page_id, display)
+            }
             Inline::Transclusion(expr) => write!(f, "Transclude({:?})", expr),
             Inline::Reference(expr) => write!(f, "Ref({:?})", expr),
         }
@@ -272,6 +296,9 @@ pub fn inlines_to_plain_text(inlines: &[Inline]) -> String {
             Inline::Text(t) => s.push_str(t),
             Inline::Bold(inner) | Inline::Italic(inner) | Inline::Strikethrough(inner) => {
                 s.push_str(&inlines_to_plain_text(inner));
+            }
+            Inline::WikiLink { display, .. } => {
+                s.push_str(&inlines_to_plain_text(display));
             }
             Inline::Reference(_) => {}
             Inline::Link { .. } => {}
@@ -321,5 +348,65 @@ fn collect_from_inlines_for_chunk<'a>(block: &'a Block, refs: &mut Vec<&'a RefEx
             }
         }
         _ => {}
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WikiLinkEntry {
+    pub page_id: usize,
+    pub display_plain: String,
+    pub context_plain: String,
+}
+
+pub fn extract_wiki_links(chunk: &Chunk) -> Vec<WikiLinkEntry> {
+    let mut links = Vec::new();
+    for block in chunk.blocks() {
+        collect_wiki_from_block(block, &mut links);
+    }
+    links
+}
+
+fn collect_wiki_from_block(block: &Block, links: &mut Vec<WikiLinkEntry>) {
+    match block {
+        Block::Paragraph(inlines)
+        | Block::Heading {
+            content: inlines, ..
+        } => {
+            let context = inlines_to_plain_text(inlines);
+            collect_wiki_from_inlines(inlines, &context, links);
+        }
+        Block::Blockquote { content, .. } => {
+            let context = inlines_to_plain_text(content);
+            collect_wiki_from_inlines(content, &context, links);
+        }
+        Block::List { items, .. } => {
+            for item in items {
+                let context = inlines_to_plain_text(item);
+                collect_wiki_from_inlines(item, &context, links);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_wiki_from_inlines(inlines: &[Inline], context: &str, links: &mut Vec<WikiLinkEntry>) {
+    for inline in inlines {
+        match inline {
+            Inline::WikiLink { page_id, display } => {
+                let display_plain = inlines_to_plain_text(display);
+                links.push(WikiLinkEntry {
+                    page_id: *page_id,
+                    display_plain,
+                    context_plain: context.to_string(),
+                });
+            }
+            Inline::Bold(inner) | Inline::Italic(inner) | Inline::Strikethrough(inner) => {
+                collect_wiki_from_inlines(inner, context, links);
+            }
+            Inline::Link { display, .. } => {
+                collect_wiki_from_inlines(display, context, links);
+            }
+            _ => {}
+        }
     }
 }

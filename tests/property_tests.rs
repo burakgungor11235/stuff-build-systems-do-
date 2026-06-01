@@ -3,7 +3,7 @@ use proptest::prelude::*;
 use sbd::bs::cas::{Cas, Hash};
 use sbd::markup::assembler::{render_to_html, RenderContext};
 use sbd::markup::parser::parse;
-use sbd::markup::semantic::{ChunkGraph, RenderState};
+use sbd::markup::semantic::{ChunkGraph, LinkGraph, NameTable, RenderState};
 
 mod test_utils;
 use test_utils::TempDir;
@@ -27,7 +27,9 @@ proptest! {
         let doc = parse(&input);
         let graph = ChunkGraph::default();
         let render_state = RenderState::default();
-        let ctx = RenderContext::new("test.stuff", 0, &graph, &render_state);
+        let names = NameTable::default();
+        let link_graph = LinkGraph::default();
+        let ctx = RenderContext::new("test.stuff", 0, &graph, &render_state, &names, &link_graph);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             render_to_html(&doc, &ctx)
         }));
@@ -38,7 +40,9 @@ proptest! {
         let doc = parse(&input);
         let graph = ChunkGraph::default();
         let render_state = RenderState::default();
-        let ctx = RenderContext::new("test.stuff", 0, &graph, &render_state);
+        let names = NameTable::default();
+        let link_graph = LinkGraph::default();
+        let ctx = RenderContext::new("test.stuff", 0, &graph, &render_state, &names, &link_graph);
         let html = render_to_html(&doc, &ctx);
         prop_assert!(String::from_utf8(html.clone().into_bytes()).is_ok());
     }

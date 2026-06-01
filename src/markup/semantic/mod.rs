@@ -1,15 +1,15 @@
-mod arena;
-mod resolve;
+pub mod intern;
+pub mod link_graph;
+pub mod resolve;
 mod types;
+mod viz;
 
 pub mod deps;
-pub mod images;
-pub mod plugin;
-pub mod validate;
 
-pub use arena::StringArena;
+pub use intern::{NameTable, StringArena};
+pub use link_graph::LinkGraph;
 pub use resolve::{resolve_ref, resolve_transclusion};
-use tracing::warn;
+use std::cmp::min;
 pub use types::{Chunk, ChunkId, DocId, Document, StringId};
 
 use crate::markup::ast;
@@ -18,7 +18,7 @@ use rustc_hash::FxHashMap;
 const SOURCE_EXT: &str = ".stuff";
 
 #[inline]
-fn normalize_path(p: &str) -> &str {
+pub(crate) fn normalize_path(p: &str) -> &str {
     p.strip_suffix(SOURCE_EXT).unwrap_or(p)
 }
 
@@ -27,6 +27,7 @@ pub struct ChunkGraph {
     docs: Vec<Document>,
     strings: StringArena,
     path_to_docid: FxHashMap<String, DocId>,
+    page_id_to_docid: Vec<Option<DocId>>,
 }
 
 impl Default for ChunkGraph {
@@ -36,23 +37,73 @@ impl Default for ChunkGraph {
             docs: Vec::new(),
             strings: StringArena::with_capacity(64),
             path_to_docid: FxHashMap::default(),
+            page_id_to_docid: Vec::new(),
         }
     }
 }
 
+pub fn normalize_page_name(name: &str) -> String {
+    let stripped = name.strip_suffix(SOURCE_EXT).unwrap_or(name);
+    stripped.to_lowercase().replace(' ', "-")
+}
+
+pub fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let la = a.len();
+    let lb = b.len();
+    if la < lb {
+        return levenshtein_distance(b, a);
+    }
+    if lb == 0 {
+        return la;
+    }
+    let mut prev: Vec<usize> = (0..=lb).collect();
+    let mut curr = vec![0; lb + 1];
+    for (i, ca) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.chars().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = min(min(curr[j] + 1, prev[j + 1] + 1), prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[lb]
+}
+
 #[derive(Default)]
 pub struct RenderState {
-    chunk_html: FxHashMap<ChunkId, String>,
+    chunk_html: Vec<String>,
+    chunk_ready: Vec<bool>,
     chunk_inlines: FxHashMap<ChunkId, Vec<ast::Inline>>,
 }
 
 impl RenderState {
+    pub fn with_capacity(n: usize) -> Self {
+        let mut chunk_html = Vec::with_capacity(n);
+        let mut chunk_ready = Vec::with_capacity(n);
+        for _ in 0..n {
+            chunk_html.push(String::new());
+            chunk_ready.push(false);
+        }
+        Self {
+            chunk_html,
+            chunk_ready,
+            chunk_inlines: FxHashMap::default(),
+        }
+    }
+
     pub fn set(&mut self, chunk_id: ChunkId, html: String) {
-        self.chunk_html.insert(chunk_id, html);
+        let idx = chunk_id.0 as usize;
+        self.chunk_html[idx] = html;
+        self.chunk_ready[idx] = true;
     }
 
     pub fn get(&self, chunk_id: ChunkId) -> Option<&str> {
-        self.chunk_html.get(&chunk_id).map(|s| s.as_str())
+        let idx = chunk_id.0 as usize;
+        if idx < self.chunk_ready.len() && self.chunk_ready[idx] {
+            Some(self.chunk_html[idx].as_str())
+        } else {
+            None
+        }
     }
 
     pub fn set_inlines(&mut self, chunk_id: ChunkId, inlines: Vec<ast::Inline>) {
@@ -101,10 +152,16 @@ impl ChunkGraph {
             docs: documents,
             strings,
             path_to_docid,
+            page_id_to_docid: Vec::new(),
         }
     }
 
-    pub fn add_document(&mut self, doc: &ast::Document, rel_path: String) -> DocId {
+    pub fn add_document(
+        &mut self,
+        doc: &ast::Document,
+        rel_path: String,
+        names: &mut NameTable,
+    ) -> DocId {
         let id = DocId(self.docs.len() as u32);
         let mut chunk_ids = Vec::new();
 
@@ -113,7 +170,9 @@ impl ChunkGraph {
             chunk_ids.push(cid);
 
             let chunk_name = match chunk {
-                ast::Chunk::Implicit { name, .. } => name.as_deref().map(|s| self.strings.intern(s)),
+                ast::Chunk::Implicit { name, .. } => {
+                    name.as_deref().map(|s| self.strings.intern(s))
+                }
                 ast::Chunk::Explicit { name, .. } => Some(self.strings.intern(name)),
             };
 
@@ -142,6 +201,14 @@ impl ChunkGraph {
 
         let normalized = normalize_path(&rel_path).to_string();
         self.path_to_docid.insert(normalized.clone(), id);
+
+        let page_key = normalize_page_name(&normalized);
+        let page_id = names.intern(&page_key);
+        if page_id >= self.page_id_to_docid.len() {
+            self.page_id_to_docid.resize(page_id + 1, None);
+        }
+        self.page_id_to_docid[page_id] = Some(id);
+
         self.docs.push(Document {
             id,
             rel_path: normalized,
@@ -156,6 +223,11 @@ impl ChunkGraph {
     }
 
     #[must_use]
+    pub fn doc(&self, doc_id: DocId) -> Option<&Document> {
+        self.docs.get(doc_id.0 as usize)
+    }
+
+    #[must_use]
     pub fn chunks_in(&self, doc_id: DocId) -> &[ChunkId] {
         self.docs
             .get(doc_id.0 as usize)
@@ -167,6 +239,49 @@ impl ChunkGraph {
     pub fn doc_by_path(&self, rel_path: &str) -> Option<DocId> {
         let normalized = normalize_path(rel_path);
         self.path_to_docid.get(normalized).copied()
+    }
+
+    #[must_use]
+    pub fn resolve_wiki_page(&self, page_id: usize) -> Option<DocId> {
+        self.page_id_to_docid.get(page_id).copied().flatten()
+    }
+
+    /// Fuzzy fallback: when exact page_id lookup fails, find the closest
+    /// matching doc path by Levenshtein distance (max 2 edits or len/3).
+    /// Note: Not implemented just yet!!!!!!!!
+    pub fn resolve_wiki_page_fuzzy(&self, page_id: usize, names: &NameTable) -> Option<DocId> {
+        let target = names.get(page_id);
+        let mut best: Option<(DocId, usize)> = None;
+        let max_dist = std::cmp::max(2, target.len() / 3);
+
+        for (id, &opt_doc_id) in self.page_id_to_docid.iter().enumerate() {
+            let doc_id = opt_doc_id?;
+            let candidate = names.get(id);
+            let dist = levenshtein_distance(target, candidate);
+            if dist < max_dist && best.map_or(true, |(_, b)| dist < b) {
+                best = Some((doc_id, dist));
+            }
+            if dist == 0 {
+                return Some(doc_id);
+            }
+        }
+        best.map(|(id, _)| id)
+    }
+
+    pub fn all_doc_ids(&self) -> Vec<DocId> {
+        self.docs.iter().map(|d| d.id).collect()
+    }
+
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len()
+    }
+
+    #[cfg(test)]
+    pub fn add_wiki_page_mapping(&mut self, page_id: usize, doc_id: DocId) {
+        if page_id >= self.page_id_to_docid.len() {
+            self.page_id_to_docid.resize(page_id + 1, None);
+        }
+        self.page_id_to_docid[page_id] = Some(doc_id);
     }
 
     #[must_use]
@@ -197,7 +312,9 @@ impl ChunkGraph {
     #[must_use]
     pub fn get_chunks(&self, file: &str) -> Option<&[ChunkId]> {
         let normalized = normalize_path(file);
-        self.path_to_docid.get(normalized).map(|&id| self.chunks_in(id))
+        self.path_to_docid
+            .get(normalized)
+            .map(|&id| self.chunks_in(id))
     }
 
     #[must_use]
@@ -229,7 +346,6 @@ impl ChunkGraph {
         chunk_ids: &[ChunkId],
         heading: &str,
     ) -> Option<Vec<ChunkId>> {
-
         let start = chunk_ids
             .iter()
             .position(|&cid| self.heading_matches(cid, heading))?;
@@ -248,15 +364,5 @@ impl ChunkGraph {
         Some(chunk_ids[start + 1..end].to_vec())
 
         // writing loops are my passion.
-    }
-
-    #[must_use]
-    pub fn normalize_idx(&self, idx: i32, len: i32) -> Option<i32> {
-        if idx >= 0 && idx < len {
-            Some(idx)
-        } else {
-            warn!("something has gone verry wrong");
-            None
-        }
     }
 }

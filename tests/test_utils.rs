@@ -9,7 +9,8 @@ pub struct TempDir {
 impl TempDir {
     pub fn new(prefix: &str) -> Self {
         let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let path = std::env::temp_dir().join(format!("sbd_{}_{}_{}", prefix, std::process::id(), id));
+        let path =
+            std::env::temp_dir().join(format!("sbd_{}_{}_{}", prefix, std::process::id(), id));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         Self { path }

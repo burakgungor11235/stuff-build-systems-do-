@@ -99,7 +99,10 @@ impl<'a> TokenStream<'a> {
         let (line, col) = self.position();
         match self.next() {
             Some(tok) => tok,
-            None => panic!("expected {:?} at line {}:{} but got EOF", expected, line, col),
+            None => panic!(
+                "expected {:?} at line {}:{} but got EOF",
+                expected, line, col
+            ),
         }
     }
 
@@ -170,8 +173,8 @@ mod lex_helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::lex_helpers::{assert_lossless, lex};
+    use super::*;
 
     #[test]
     fn empty_input() {

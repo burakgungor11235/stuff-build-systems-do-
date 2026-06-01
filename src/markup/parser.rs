@@ -1,14 +1,26 @@
-use crate::markup::{ast::*, lexer::Token, tsink::TokenStream};
 use crate::markup::ast::inlines_to_plain_text;
+use crate::markup::semantic::intern::NameTable;
+use crate::markup::semantic::normalize_page_name;
+use crate::markup::{ast::*, lexer::Token, tsink::TokenStream};
 use tracing::trace;
 
 pub struct Parser<'a> {
     tokens: TokenStream<'a>,
+    names: &'a mut NameTable,
 }
 
 pub fn parse(source: &str) -> Document {
+    Parser {
+        tokens: TokenStream::new(source),
+        names: &mut NameTable::default(),
+    }
+    .parse_document()
+}
+
+pub fn parse_with_names(source: &str, names: &mut NameTable) -> Document {
     let mut parser = Parser {
         tokens: TokenStream::new(source),
+        names,
     };
     parser.parse_document()
 }
@@ -25,7 +37,12 @@ impl<'a> Parser<'a> {
                 chunks.push(chunk);
             } else {
                 let (line, col) = self.tokens.position();
-                trace!("skipped unexpected token {:?} at {}:{}", self.tokens.last_slice(), line, col);
+                trace!(
+                    "skipped unexpected token {:?} at {}:{}",
+                    self.tokens.last_slice(),
+                    line,
+                    col
+                );
                 self.tokens.next();
             }
         }
@@ -212,6 +229,10 @@ impl<'a> Parser<'a> {
         output
     }
 
+    fn looks_like_url(s: &str) -> bool {
+        s.contains("://") || s.starts_with("mailto:")
+    }
+
     fn parse_link(&mut self, output: &mut Vec<Inline>) {
         let mut target = String::new();
         loop {
@@ -231,7 +252,14 @@ impl<'a> Parser<'a> {
             vec![Inline::Text(target.clone())]
         };
         self.tokens.consume_if(&Token::LinkEnd);
-        output.push(Inline::Link { target, display });
+
+        if Self::looks_like_url(&target) {
+            output.push(Inline::Link { target, display });
+        } else {
+            let normalized = normalize_page_name(&target);
+            let page_id = self.names.intern(&normalized);
+            output.push(Inline::WikiLink { page_id, display });
+        }
     }
 
     fn push_text(&mut self, output: &mut Vec<Inline>, text: &str) {
@@ -241,7 +269,10 @@ impl<'a> Parser<'a> {
     /// Parse a reference expression after `&` (or `!&`) has been consumed.
     fn parse_reference_expression(&mut self) -> RefExpr {
         self.tokens.skip_inline_trivia();
-        trace!("parse_reference_expression: peeking {:?}", self.tokens.peek());
+        trace!(
+            "parse_reference_expression: peeking {:?}",
+            self.tokens.peek()
+        );
 
         match self.tokens.peek() {
             // &#heading..   heading range in current file
@@ -271,7 +302,10 @@ impl<'a> Parser<'a> {
             }
 
             // &-N, &+N, &N, &name
-            Some(Token::Minus) | Some(Token::Plus) | Some(Token::Digits(_)) | Some(Token::Text(_)) => {
+            Some(Token::Minus)
+            | Some(Token::Plus)
+            | Some(Token::Digits(_))
+            | Some(Token::Text(_)) => {
                 let base = self.parse_single_ref();
                 self.parse_qualifier(base)
             }
@@ -311,7 +345,11 @@ impl<'a> Parser<'a> {
         self.tokens.skip_inline_trivia();
         match self.tokens.next() {
             Some(Token::Minus) | Some(Token::Plus) => {
-                let sign = if matches!(self.tokens.last_slice(), "-") { -1 } else { 1 };
+                let sign = if matches!(self.tokens.last_slice(), "-") {
+                    -1
+                } else {
+                    1
+                };
                 self.tokens.skip_inline_trivia();
                 if let Some(Token::Digits(d)) = self.tokens.peek() {
                     let digits = d.clone();
@@ -429,7 +467,10 @@ impl<'a> Parser<'a> {
                     Some(Token::Digits(d)) => {
                         let idx_str = d.clone();
                         self.tokens.next();
-                        let result = RefExpr::FileByIndex(base.extract_file_name(), idx_str.parse::<usize>().unwrap_or(0));
+                        let result = RefExpr::FileByIndex(
+                            base.extract_file_name(),
+                            idx_str.parse::<usize>().unwrap_or(0),
+                        );
                         trace!("parse_qualifier: file by index {:?}", result);
                         result
                     }
@@ -445,7 +486,8 @@ impl<'a> Parser<'a> {
                     Some(Token::Hash) => {
                         self.tokens.expect(&Token::Hash);
                         let heading = self.parse_heading_text();
-                        let result = self.parse_post_heading_qualifier(base.extract_file_name(), heading);
+                        let result =
+                            self.parse_post_heading_qualifier(base.extract_file_name(), heading);
                         trace!("parse_qualifier: post heading (via .#) {:?}", result);
                         result
                     }
@@ -673,12 +715,13 @@ mod tests {
         let doc = parse(input);
         let chunk = doc.chunks.first().expect("expected chunk");
         match chunk {
-            Chunk::Implicit { block: Block::Paragraph(inlines), .. } => {
-                match &inlines[0] {
-                    Inline::Reference(expr) => expr.clone(),
-                    _ => panic!("expected reference at position 0 in: {}", input),
-                }
-            }
+            Chunk::Implicit {
+                block: Block::Paragraph(inlines),
+                ..
+            } => match &inlines[0] {
+                Inline::Reference(expr) => expr.clone(),
+                _ => panic!("expected reference at position 0 in: {}", input),
+            },
             _ => panic!("expected implicit paragraph in: {}", input),
         }
     }
@@ -688,15 +731,16 @@ mod tests {
         let doc = parse(input);
         let chunk = doc.chunks.first().expect("expected chunk");
         match chunk {
-            Chunk::Implicit { block: Block::Paragraph(inlines), .. } => {
-                match &inlines[pos] {
-                    Inline::Reference(expr) => expr.clone(),
-                    other => panic!(
-                        "expected reference at position {} in '{}', got {:?}",
-                        pos, input, other
-                    ),
-                }
-            }
+            Chunk::Implicit {
+                block: Block::Paragraph(inlines),
+                ..
+            } => match &inlines[pos] {
+                Inline::Reference(expr) => expr.clone(),
+                other => panic!(
+                    "expected reference at position {} in '{}', got {:?}",
+                    pos, input, other
+                ),
+            },
             _ => panic!("expected implicit paragraph in: {}", input),
         }
     }
@@ -705,12 +749,13 @@ mod tests {
         let doc = parse(input);
         let chunk = doc.chunks.first().expect("expected chunk");
         match chunk {
-            Chunk::Implicit { block: Block::Paragraph(inlines), .. } => {
-                match &inlines[0] {
-                    Inline::Transclusion(expr) => expr.clone(),
-                    _ => panic!("expected transclusion at position 0 in: {}", input),
-                }
-            }
+            Chunk::Implicit {
+                block: Block::Paragraph(inlines),
+                ..
+            } => match &inlines[0] {
+                Inline::Transclusion(expr) => expr.clone(),
+                _ => panic!("expected transclusion at position 0 in: {}", input),
+            },
             _ => panic!("expected implicit paragraph in: {}", input),
         }
     }
@@ -878,11 +923,26 @@ mod tests {
 
     #[test]
     fn file_reference_qualifiers() {
-        assert_eq!(parse_ref("&other_file.1"), RefExpr::FileByIndex("other_file".into(), 1));
-        assert_eq!(parse_ref("&other_file.myname"), RefExpr::FileByName("other_file".into(), "myname".into()));
-        assert_eq!(parse_ref("&other_file#intro"), RefExpr::FileByHeading("other_file".into(), "intro".into()));
-        assert_eq!(parse_ref("&other_file#intro.3"), RefExpr::FileByHeadingIndex("other_file".into(), "intro".into(), 3));
-        assert_eq!(parse_ref("&other_file#intro.myname"), RefExpr::FileByHeadingName("other_file".into(), "intro".into(), "myname".into()));
+        assert_eq!(
+            parse_ref("&other_file.1"),
+            RefExpr::FileByIndex("other_file".into(), 1)
+        );
+        assert_eq!(
+            parse_ref("&other_file.myname"),
+            RefExpr::FileByName("other_file".into(), "myname".into())
+        );
+        assert_eq!(
+            parse_ref("&other_file#intro"),
+            RefExpr::FileByHeading("other_file".into(), "intro".into())
+        );
+        assert_eq!(
+            parse_ref("&other_file#intro.3"),
+            RefExpr::FileByHeadingIndex("other_file".into(), "intro".into(), 3)
+        );
+        assert_eq!(
+            parse_ref("&other_file#intro.myname"),
+            RefExpr::FileByHeadingName("other_file".into(), "intro".into(), "myname".into())
+        );
     }
 
     #[test]
@@ -895,13 +955,19 @@ mod tests {
 
     #[test]
     fn reference_with_surrounding_text() {
-        assert_eq!(parse_ref_at("see &my_chunk", 2), RefExpr::Named("my_chunk".into()));
+        assert_eq!(
+            parse_ref_at("see &my_chunk", 2),
+            RefExpr::Named("my_chunk".into())
+        );
         assert_eq!(parse_ref_at("see &-1..-4", 2), RefExpr::Range(-1, -4));
     }
 
     #[test]
     fn reference_underscore_in_name() {
-        assert_eq!(parse_ref("&my_chunk_name"), RefExpr::Named("my_chunk_name".into()));
+        assert_eq!(
+            parse_ref("&my_chunk_name"),
+            RefExpr::Named("my_chunk_name".into())
+        );
     }
 
     #[test]
@@ -956,7 +1022,10 @@ mod tests {
         let doc = parse("before !&my_chunk after\n");
         let chunk = doc.chunks.first().unwrap();
         match chunk {
-            Chunk::Implicit { block: Block::Paragraph(inlines), .. } => {
+            Chunk::Implicit {
+                block: Block::Paragraph(inlines),
+                ..
+            } => {
                 assert_eq!(inlines.len(), 5);
                 assert_eq!(inlines[0], Inline::Text("before".into()));
                 assert_eq!(inlines[1], Inline::Text(" ".into()));
@@ -981,7 +1050,10 @@ mod tests {
         let doc = parse("!&foo &bar\n");
         let chunk = doc.chunks.first().expect("expected chunk");
         match chunk {
-            Chunk::Implicit { block: Block::Paragraph(inlines), .. } => {
+            Chunk::Implicit {
+                block: Block::Paragraph(inlines),
+                ..
+            } => {
                 assert!(matches!(&inlines[0], Inline::Transclusion(_)));
                 assert!(matches!(&inlines[2], Inline::Reference(_)));
             }

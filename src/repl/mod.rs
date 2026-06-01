@@ -1,8 +1,8 @@
 mod highlight;
 mod input_highlighter;
 
+use crate::markup::semantic::{ChunkGraph, LinkGraph, NameTable, RenderState};
 use crate::markup::{assembler, lexer::Token, parser};
-use crate::markup::semantic::{ChunkGraph, RenderState};
 use logos::Logos;
 use rustyline::Editor;
 use std::collections::HashMap;
@@ -137,7 +137,16 @@ pub fn run() -> anyhow::Result<()> {
                             let doc = parser::parse(content);
                             let graph = ChunkGraph::default();
                             let render_state = RenderState::default();
-                            let ctx = assembler::RenderContext::new(&name, 0, &graph, &render_state);
+                            let names = NameTable::default();
+                            let link_graph = LinkGraph::default();
+                            let ctx = assembler::RenderContext::new(
+                                &name,
+                                0,
+                                &graph,
+                                &render_state,
+                                &names,
+                                &link_graph,
+                            );
                             let html = assembler::render_to_html(&doc, &ctx);
                             println!("{}", highlight::highlight_html(&html));
                         } else {
@@ -281,7 +290,10 @@ fn show_help() {
 fn process_markup(source: &str, mode: &OutputMode) -> String {
     let graph = ChunkGraph::default();
     let render_state = RenderState::default();
-    let ctx = assembler::RenderContext::new("inline", 0, &graph, &render_state);
+    let names = NameTable::default();
+    let link_graph = LinkGraph::default();
+    let ctx =
+        assembler::RenderContext::new("inline", 0, &graph, &render_state, &names, &link_graph);
     match mode {
         OutputMode::Tokens => {
             let tokens: Vec<Token> = Token::lexer(source).filter_map(|t| t.ok()).collect();

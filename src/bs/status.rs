@@ -57,7 +57,7 @@ impl Status {
             let manifest_dir = &self.manifest.project.manifest_dir;
             let src_dir_abs = project.src_dir_path();
 
-            // Writing the entire system was easier than this BS. 
+            // Writing the entire system was easier than this BS.
             for entry in project.walk_source_files() {
                 let source_path = entry.path();
                 let source_rel = source_path
@@ -73,12 +73,13 @@ impl Status {
                 let output_path = project.output_path_for_source(&rel_within_src);
                 let output_exists = manifest_dir.join(&output_path).exists();
 
-                let is_cached = if let Ok((_content, content_hash)) = Cas::read_and_hash(source_path) {
-                    let key = Cas::compute_chunk_key(&rel_within_src, 0, &content_hash);
-                    cas.contains(&key)
-                } else {
-                    false
-                };
+                let is_cached =
+                    if let Ok((_content, content_hash)) = Cas::read_and_hash(source_path) {
+                        let key = Cas::compute_chunk_key(&rel_within_src, 0, &content_hash);
+                        cas.contains(&key)
+                    } else {
+                        false
+                    };
 
                 let (color, marker) = if output_exists && is_cached {
                     ("\x1b[32m", "[+]")

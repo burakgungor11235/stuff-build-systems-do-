@@ -339,6 +339,15 @@ fn highlight_inline(inline: &crate::markup::ast::Inline) -> String {
             )
         }
 
+        crate::markup::ast::Inline::WikiLink { page_id, display } => {
+            format!(
+                "{}({}, id={})",
+                bold(C_GREEN).paint("WikiLink"),
+                highlight_inline_list(display),
+                page_id
+            )
+        }
+
         crate::markup::ast::Inline::Transclusion(t) => {
             format!(
                 "{}({})",

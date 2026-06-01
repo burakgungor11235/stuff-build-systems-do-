@@ -1,13 +1,15 @@
 use tracing::warn;
 
 use crate::markup::ast::*;
-use crate::markup::semantic::{ChunkGraph, RenderState};
+use crate::markup::semantic::{ChunkGraph, LinkGraph, NameTable, RenderState};
 
 pub struct RenderContext<'a> {
     pub current_file: &'a str,
     pub current_chunk_index: usize,
     pub graph: &'a ChunkGraph,
     pub render_state: &'a RenderState,
+    pub names: &'a NameTable,
+    pub link_graph: &'a LinkGraph,
 }
 
 impl<'a> RenderContext<'a> {
@@ -16,12 +18,16 @@ impl<'a> RenderContext<'a> {
         current_chunk_index: usize,
         graph: &'a ChunkGraph,
         render_state: &'a RenderState,
+        names: &'a NameTable,
+        link_graph: &'a LinkGraph,
     ) -> Self {
         Self {
             current_file,
             current_chunk_index,
             graph,
             render_state,
+            names,
+            link_graph,
         }
     }
 
@@ -30,8 +36,10 @@ impl<'a> RenderContext<'a> {
         chunk_idx: usize,
         graph: &'a ChunkGraph,
         state: &'a RenderState,
+        names: &'a NameTable,
+        link_graph: &'a LinkGraph,
     ) -> Self {
-        Self::new(rel_path, chunk_idx, graph, state)
+        Self::new(rel_path, chunk_idx, graph, state, names, link_graph)
     }
 }
 
@@ -153,6 +161,36 @@ fn render_inline(inline: &Inline, ctx: &RenderContext) -> String {
             let display_html = render_inlines(display, ctx);
             format!("<a href=\"{}\">{}</a>", escape_attr(target), display_html)
         }
+
+        Inline::WikiLink { page_id, display } => {
+            let display_html = render_inlines(display, ctx);
+            match ctx.graph.resolve_wiki_page(*page_id) {
+                Some(doc_id) => {
+                    let doc = ctx.graph.doc(doc_id).unwrap();
+                    let href = format!("{}.html", doc.rel_path);
+                    let title = ctx
+                        .graph
+                        .chunks_in(doc_id)
+                        .first()
+                        .and_then(|&cid| ctx.graph.chunk(cid))
+                        .and_then(|c| c.first_inline_text)
+                        .map(|sid| ctx.graph.string(sid))
+                        .map(|t| t.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|t| format!(" title=\"{}\"", escape_attr(t)))
+                        .unwrap_or_default();
+                    format!(
+                        "<a href=\"{}\"{}>{}</a>",
+                        escape_attr(&href),
+                        title,
+                        display_html
+                    )
+                }
+                None => {
+                    format!("<a href=\"#\" class=\"wiki-missing\">{}</a>", display_html)
+                }
+            }
+        }
     }
 }
 
@@ -181,6 +219,76 @@ fn escape_html(s: &str) -> String {
         }
     }
     result
+}
+
+pub struct HtmlPage {
+    body: String,
+    orphan: bool,
+    backlinks: Vec<(String, String)>, // (href, display text)
+    outlinks: Vec<(String, String)>,
+}
+
+impl HtmlPage {
+    pub fn new(body: String) -> Self {
+        Self {
+            body,
+            orphan: false,
+            backlinks: vec![],
+            outlinks: vec![],
+        }
+    }
+
+    pub fn set_orphan(&mut self, yes: bool) {
+        self.orphan = yes;
+    }
+
+    pub fn add_backlink(&mut self, href: &str, text: &str) {
+        self.backlinks.push((href.to_string(), text.to_string()));
+    }
+
+    pub fn add_outlink(&mut self, href: &str, text: &str) {
+        self.outlinks.push((href.to_string(), text.to_string()));
+    }
+
+    pub fn render(&self) -> String {
+        use serde_json::json;
+        let mut head = String::from("<meta charset=\"utf-8\">\n");
+
+        if !self.backlinks.is_empty() {
+            let bl: Vec<serde_json::Value> = self
+                .backlinks
+                .iter()
+                .map(|(href, text)| json!({"page": href, "text": text}))
+                .collect();
+            head.push_str(&format!(
+                "  <meta name=\"sbd:backlinks\" content=\"{}\">\n",
+                escape_attr(&serde_json::to_string(&bl).unwrap())
+            ));
+        }
+        if !self.outlinks.is_empty() {
+            let ol: Vec<serde_json::Value> = self
+                .outlinks
+                .iter()
+                .map(|(href, text)| json!({"page": href, "text": text}))
+                .collect();
+            head.push_str(&format!(
+                "  <meta name=\"sbd:outlinks\" content=\"{}\">\n",
+                escape_attr(&serde_json::to_string(&ol).unwrap())
+            ));
+        }
+
+        let prefix = if self.orphan {
+            "<!-- orphan: true -->\n"
+        } else {
+            ""
+        };
+        format!(
+            "<!DOCTYPE html>\n<html lang=\"en\">\n\
+             <head>\n{}  </head>\n<body>\n\
+             {}{}</body>\n</html>\n",
+            head, prefix, self.body,
+        )
+    }
 }
 
 // still not sure if this is a duct tape
@@ -253,13 +361,19 @@ mod test {
         ChunkGraph::default()
     }
 
+    fn empty_names() -> NameTable {
+        NameTable::with_capacity(4)
+    }
+
     fn make_ctx<'a>(
         file: &'a str,
         idx: usize,
         graph: &'a ChunkGraph,
         render_state: &'a RenderState,
+        names: &'a NameTable,
+        link_graph: &'a LinkGraph,
     ) -> RenderContext<'a> {
-        RenderContext::new(file, idx, graph, render_state)
+        RenderContext::new(file, idx, graph, render_state, names, link_graph)
     }
 
     #[test]
@@ -267,7 +381,9 @@ mod test {
         let doc = Document { chunks: vec![] };
         let graph = empty_graph();
         let render_state = RenderState::default();
-        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
+        let names = empty_names();
+        let lg = LinkGraph::new();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state, &names, &lg);
         assert_eq!(render_to_html(&doc, &ctx), "");
     }
 
@@ -281,7 +397,9 @@ mod test {
         };
         let graph = empty_graph();
         let render_state = RenderState::default();
-        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
+        let names = empty_names();
+        let lg = LinkGraph::new();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state, &names, &lg);
         assert_eq!(render_to_html(&doc, &ctx), "<p>Hello</p>\n");
     }
 
@@ -298,7 +416,9 @@ mod test {
         };
         let graph = empty_graph();
         let render_state = RenderState::default();
-        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
+        let names = empty_names();
+        let lg = LinkGraph::new();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state, &names, &lg);
         assert_eq!(render_to_html(&doc, &ctx), "<h3>Title</h3>\n");
     }
 
@@ -316,7 +436,9 @@ mod test {
         };
         let graph = empty_graph();
         let render_state = RenderState::default();
-        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
+        let names = empty_names();
+        let lg = LinkGraph::new();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state, &names, &lg);
         assert_eq!(
             render_to_html(&doc, &ctx),
             "<p><strong>bold</strong> and <em>italic</em></p>\n"
@@ -333,7 +455,9 @@ mod test {
         };
         let graph = empty_graph();
         let render_state = RenderState::default();
-        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
+        let names = empty_names();
+        let lg = LinkGraph::new();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state, &names, &lg);
         assert_eq!(render_to_html(&doc, &ctx), "<p>&lt;script&gt;</p>\n");
     }
 
@@ -350,7 +474,9 @@ mod test {
         };
         let graph = empty_graph();
         let render_state = RenderState::default();
-        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
+        let names = empty_names();
+        let lg = LinkGraph::new();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state, &names, &lg);
         assert_eq!(
             render_to_html(&doc, &ctx),
             "<img src=\"test.png\" alt=\"\" />"
@@ -373,7 +499,9 @@ mod test {
         };
         let graph = empty_graph();
         let render_state = RenderState::default();
-        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
+        let names = empty_names();
+        let lg = LinkGraph::new();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state, &names, &lg);
         assert_eq!(
             render_to_html(&doc, &ctx),
             "<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n"
@@ -393,7 +521,9 @@ mod test {
         };
         let graph = empty_graph();
         let render_state = RenderState::default();
-        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
+        let names = empty_names();
+        let lg = LinkGraph::new();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state, &names, &lg);
         let html = render_to_html(&doc, &ctx);
         assert!(html.contains("<p>inside</p>"));
         assert!(html.contains("<hr>"));
@@ -412,7 +542,9 @@ mod test {
         };
         let graph = empty_graph();
         let render_state = RenderState::default();
-        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
+        let names = empty_names();
+        let lg = LinkGraph::new();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state, &names, &lg);
         let html = render_to_html(&doc, &ctx);
         assert!(html.contains("unresolved ref"));
     }
@@ -429,7 +561,9 @@ mod test {
         };
         let graph = empty_graph();
         let render_state = RenderState::default();
-        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
+        let names = empty_names();
+        let lg = LinkGraph::new();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state, &names, &lg);
         let html = render_to_html(&doc, &ctx);
         assert!(html.contains("unresolved transclusion"));
     }
@@ -447,8 +581,65 @@ mod test {
         };
         let graph = empty_graph();
         let render_state = RenderState::default();
-        let ctx = make_ctx("test.stuff", 0, &graph, &render_state);
+        let names = empty_names();
+        let lg = LinkGraph::new();
+        let ctx = make_ctx("test.stuff", 0, &graph, &render_state, &names, &lg);
         let html = render_to_html(&doc, &ctx);
         assert!(html.contains("<!-- @foo(arg1) -->"));
+    }
+
+    #[test]
+    fn wiki_link_resolved() {
+        let mut names = empty_names();
+        let mut graph = ChunkGraph::default();
+        let doc = Document {
+            chunks: vec![Chunk::Implicit {
+                name: None,
+                block: Block::Paragraph(vec![Inline::Text("hello".into())]),
+            }],
+        };
+        let _doc_id = graph.add_document(&doc, "existing-page.stuff".into(), &mut names);
+        let page_id = names.intern("existing-page");
+        let render_state = RenderState::default();
+        let lg = LinkGraph::new();
+
+        let doc = Document {
+            chunks: vec![Chunk::Implicit {
+                name: None,
+                block: Block::Paragraph(vec![Inline::WikiLink {
+                    page_id,
+                    display: vec![Inline::Text("click me".into())],
+                }]),
+            }],
+        };
+        let ctx = RenderContext::new("test.stuff", 0, &graph, &render_state, &names, &lg);
+        let html = render_to_html(&doc, &ctx);
+        assert_eq!(
+            html,
+            "<p><a href=\"existing-page.html\" title=\"hello\">click me</a></p>\n"
+        );
+    }
+
+    #[test]
+    fn wiki_link_unresolved_shows_missing_class() {
+        let mut names = empty_names();
+        let page_id = names.intern("missing-page");
+        let graph = ChunkGraph::default();
+        let render_state = RenderState::default();
+        let lg = LinkGraph::new();
+
+        let doc = Document {
+            chunks: vec![Chunk::Implicit {
+                name: None,
+                block: Block::Paragraph(vec![Inline::WikiLink {
+                    page_id,
+                    display: vec![Inline::Text("Missing".into())],
+                }]),
+            }],
+        };
+        let ctx = RenderContext::new("test.stuff", 0, &graph, &render_state, &names, &lg);
+        let html = render_to_html(&doc, &ctx);
+        assert!(html.contains("class=\"wiki-missing\""));
+        assert!(html.contains("Missing"));
     }
 }

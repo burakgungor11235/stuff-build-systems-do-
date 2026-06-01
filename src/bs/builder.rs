@@ -1,21 +1,19 @@
 use crate::bs::cas::Cas;
 use crate::bs::config::Manifest;
-use crate::markup::assembler::{render_chunk, RenderContext};
-use crate::markup::ast::{extract_transclusion_refs, Document, RefExpr};
-use crate::markup::parser::parse;
+use crate::markup::assembler::{render_chunk, HtmlPage, RenderContext};
+use crate::markup::ast::{extract_transclusion_refs, extract_wiki_links, Document};
+use crate::markup::parser::parse_with_names;
 use crate::markup::semantic::deps::DependencyTracker;
-use crate::markup::semantic::{ChunkGraph, ChunkId, DocId, RenderState};
+use crate::markup::semantic::link_graph::{LinkEdge, LinkGraphBuilder};
+use crate::markup::semantic::resolve;
+use crate::markup::semantic::{
+    normalize_path, ChunkGraph, ChunkId, DocId, LinkGraph, NameTable, RenderState,
+};
 
 use rustc_hash::FxHashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use tracing::{info, warn};
-
-const SOURCE_EXT: &str = ".stuff";
-
-fn normalize_path(p: &str) -> &str {
-    p.strip_suffix(SOURCE_EXT).unwrap_or(p)
-}
 
 struct ParsedDoc {
     rel_path: String,
@@ -53,21 +51,69 @@ impl Builder {
         std::fs::create_dir_all(project.cache_dir_path())?;
 
         let src_dir = project.src_dir_path();
-        let parsed = self.parse_source_files(&src_dir)?;
+        let mut names = NameTable::default();
+        let parsed = self.parse_source_files(&src_dir, &mut names)?;
         let mut graph = ChunkGraph::default();
         let mut path_to_docid: FxHashMap<String, DocId> = FxHashMap::default();
         let mut id_to_parsed_idx: FxHashMap<DocId, usize> = FxHashMap::default();
 
         for (i, p) in parsed.iter().enumerate() {
-            let doc_id = graph.add_document(&p.doc, p.rel_path.clone());
+            let doc_id = graph.add_document(&p.doc, p.rel_path.clone(), &mut names);
             path_to_docid.insert(normalize_path(&p.rel_path).to_string(), doc_id);
             id_to_parsed_idx.insert(doc_id, i);
         }
 
+        // basically.
+        //
+        //
+        //  let there be documents
+        //      then let them be connected              (forward)
+        //          and then connected                  (reverse)
+        //              then sorted
+        //                  then rendered               ( fresh )
+        //                      then rendered           ( dirty )
+        //                          then saved.
+
+        let n_docs = graph.all_doc_ids().len();
+        let link_graph = {
+            let mut lb = LinkGraphBuilder::new();
+            for p in &parsed {
+                let doc_id = path_to_docid[normalize_path(&p.rel_path)];
+                for (chunk_idx, &chunk_id) in graph.chunks_in(doc_id).iter().enumerate() {
+                    let chunk = &p.doc.chunks[chunk_idx];
+                    for entry in extract_wiki_links(chunk) {
+                        if let Some(target_doc) = graph.resolve_wiki_page(entry.page_id) {
+                            let display_id = names.intern(&entry.display_plain);
+                            let context_id = names.intern(&entry.context_plain);
+                            lb.add_edge(LinkEdge {
+                                source_doc: doc_id,
+                                source_chunk: chunk_id,
+                                target_doc,
+                                target_chunk: None,
+                                page_id: entry.page_id,
+                                display_id,
+                                context_id,
+                            });
+                        }
+                    }
+                }
+            }
+            lb.build(n_docs)
+        };
+
         let (chunk_order, doc_order) = Self::compute_render_order(&parsed, &graph, &path_to_docid);
-        let (stale_docs, mut render_state, reverse_deps) =
-            self.render_chunks_pass1(&parsed, &graph, &path_to_docid, &chunk_order)?;
+
+        let (stale_docs, mut render_state, reverse_deps) = self.render_chunks_pass1(
+            &parsed,
+            &graph,
+            &path_to_docid,
+            &chunk_order,
+            &names,
+            &link_graph,
+        )?;
+
         let transitive_dirty = self.compute_transitive_dirty(&graph, &stale_docs, &reverse_deps)?;
+
         self.rerender_chunks(
             &parsed,
             &graph,
@@ -76,7 +122,10 @@ impl Builder {
             &stale_docs,
             &transitive_dirty,
             &chunk_order,
+            &names,
+            &link_graph,
         )?;
+
         self.write_documents_pass2(
             &parsed,
             &graph,
@@ -85,6 +134,8 @@ impl Builder {
             &stale_docs,
             &transitive_dirty,
             &doc_order,
+            &names,
+            &link_graph,
         )?;
 
         self.cas.save()?;
@@ -96,7 +147,11 @@ impl Builder {
         Ok(())
     }
 
-    fn parse_source_files(&self, src_dir: &Path) -> anyhow::Result<Vec<ParsedDoc>> {
+    fn parse_source_files(
+        &self,
+        src_dir: &Path,
+        names: &mut NameTable,
+    ) -> anyhow::Result<Vec<ParsedDoc>> {
         let mut docs = Vec::new();
         for entry in self.manifest.project.walk_source_files() {
             let src_path = entry.path();
@@ -107,7 +162,7 @@ impl Builder {
 
             match Cas::read_and_hash(src_path) {
                 Ok((content, content_hash)) => {
-                    let doc = parse(&content);
+                    let doc = parse_with_names(&content, names);
                     docs.push(ParsedDoc {
                         rel_path,
                         doc,
@@ -131,10 +186,12 @@ impl Builder {
         graph: &ChunkGraph,
         path_to_docid: &FxHashMap<String, DocId>,
         order: &[(usize, usize)],
+        names: &NameTable,
+        link_graph: &LinkGraph,
     ) -> anyhow::Result<(HashSet<DocId>, RenderState, FxHashMap<DocId, Vec<ChunkId>>)> {
         let mut reverse_deps: FxHashMap<DocId, Vec<ChunkId>> = FxHashMap::default();
         let mut stale_docs: HashSet<DocId> = HashSet::new();
-        let mut render_state = RenderState::default();
+        let mut render_state = RenderState::with_capacity(graph.chunk_count());
 
         for &(doc_idx, chunk_idx) in order {
             let p = &parsed[doc_idx];
@@ -151,6 +208,8 @@ impl Builder {
                 chunk_idx,
                 graph,
                 &render_state,
+                names,
+                link_graph,
             )?;
 
             if !was_cached {
@@ -181,12 +240,15 @@ impl Builder {
         chunk_idx: usize,
         graph: &ChunkGraph,
         render_state: &RenderState,
+        names: &NameTable,
+        link_graph: &LinkGraph,
     ) -> anyhow::Result<(String, bool)> {
         if let Some(cached) = self.cas.get(key) {
             return Ok((String::from_utf8(cached).unwrap_or_default(), true));
         }
 
-        let ctx = RenderContext::for_chunk(rel_path, chunk_idx, graph, render_state);
+        let ctx =
+            RenderContext::for_chunk(rel_path, chunk_idx, graph, render_state, names, link_graph);
         let html = render_chunk(chunk, &ctx);
         self.cas.put(key, html.as_bytes())?;
         Ok((html, false))
@@ -228,134 +290,6 @@ impl Builder {
 
     /// Transclusion resolution using a DocId map,
     /// avoiding O(N) linear search inside ChunkGraph::doc_by_path.
-    fn resolve_dep_ids(
-        expr: &RefExpr,
-        current_doc_id: DocId,
-        chunk_idx: usize,
-        path_to_docid: &FxHashMap<String, DocId>,
-        graph: &ChunkGraph,
-    ) -> Vec<ChunkId> {
-        match expr {
-            RefExpr::Named(name) => {
-                let ids = graph.chunks_in(current_doc_id);
-                ids.iter()
-                    .find(|&&cid| graph.has_name(cid, name))
-                    .copied()
-                    .map(|c| vec![c])
-                    .unwrap_or_default()
-            }
-
-            RefExpr::Relative(offset) => {
-                let ids = graph.chunks_in(current_doc_id);
-                let target = chunk_idx as i32 + offset;
-                ids.get(target as usize)
-                    .copied()
-                    .map(|c| vec![c])
-                    .unwrap_or_default()
-            }
-
-            RefExpr::Absolute(idx) => {
-                let ids = graph.chunks_in(current_doc_id);
-                ids.get(*idx).copied().map(|c| vec![c]).unwrap_or_default()
-            }
-
-            RefExpr::Range(start, end) => {
-                let ids = graph.chunks_in(current_doc_id);
-                let len = ids.len() as i32;
-                let s = range_idx(chunk_idx as i32 + start, len);
-                let e = range_idx(chunk_idx as i32 + end, len);
-                let (lo, hi) = if s <= e { (s, e) } else { (e, s) };
-                ids.get(lo as usize..=hi as usize)
-                    .map(|sl| sl.to_vec())
-                    .unwrap_or_default()
-            }
-
-            RefExpr::List(exprs) => {
-                let mut result = Vec::new();
-                for e in exprs {
-                    result.extend(Self::resolve_dep_ids(
-                        e,
-                        current_doc_id,
-                        chunk_idx,
-                        path_to_docid,
-                        graph,
-                    ));
-                }
-                result
-            }
-
-            RefExpr::FileByIndex(file, idx) => {
-                if let Some(&doc_id) = path_to_docid.get(normalize_path(file)) {
-                    let ids = graph.chunks_in(doc_id);
-                    ids.get(*idx).copied().map(|c| vec![c]).unwrap_or_default()
-                } else {
-                    vec![]
-                }
-            }
-
-            RefExpr::FileByName(file, name) => {
-                if let Some(&doc_id) = path_to_docid.get(normalize_path(file)) {
-                    let ids = graph.chunks_in(doc_id);
-                    ids.iter()
-                        .find(|&&cid| graph.has_name(cid, name))
-                        .copied()
-                        .map(|c| vec![c])
-                        .unwrap_or_default()
-                } else {
-                    vec![]
-                }
-            }
-
-            RefExpr::FileByHeading(file, heading) => {
-                if let Some(&doc_id) = path_to_docid.get(normalize_path(file)) {
-                    let ids = graph.chunks_in(doc_id);
-                    ids.iter()
-                        .find(|&&cid| graph.heading_matches(cid, heading))
-                        .copied()
-                        .map(|c| vec![c])
-                        .unwrap_or_default()
-                } else {
-                    vec![]
-                }
-            }
-
-            RefExpr::FileByHeadingIndex(file, heading, idx) => {
-                if let Some(&doc_id) = path_to_docid.get(normalize_path(file)) {
-                    let ids = graph.chunks_in(doc_id);
-                    graph
-                        .chunks_under_heading(ids, heading)
-                        .and_then(|under| under.into_iter().nth(*idx))
-                        .map(|c| vec![c])
-                        .unwrap_or_default()
-                } else {
-                    vec![]
-                }
-            }
-
-            RefExpr::FileByHeadingName(file, heading, name) => {
-                if let Some(&doc_id) = path_to_docid.get(normalize_path(file)) {
-                    let ids = graph.chunks_in(doc_id);
-                    graph
-                        .chunks_under_heading(ids, heading)
-                        .and_then(|under| under.into_iter().find(|&cid| graph.has_name(cid, name)))
-                        .map(|c| vec![c])
-                        .unwrap_or_default()
-                } else {
-                    vec![]
-                }
-            }
-
-            RefExpr::HeadingRange(heading) => {
-                let ids = graph.chunks_in(current_doc_id);
-                graph
-                    .chunks_under_heading(ids, heading)
-                    .and_then(|under| under.into_iter().next())
-                    .map(|c| vec![c])
-                    .unwrap_or_default()
-            }
-        }
-    }
-
     /// Topological sort of chunks by transclusion dependencies.
     fn compute_render_order(
         parsed: &[ParsedDoc],
@@ -374,8 +308,7 @@ impl Builder {
                 let mut chunk_deps = Vec::new();
 
                 for expr in extract_transclusion_refs(chunk) {
-                    let targets =
-                        Self::resolve_dep_ids(expr, doc_id, chunk_idx, path_to_docid, graph);
+                    let targets = resolve::resolve_to_ids(graph, expr, &p.rel_path, chunk_idx);
 
                     for t in targets.into_iter() {
                         if let Some(c) = graph.chunk(t) {
@@ -463,6 +396,8 @@ impl Builder {
         stale_docs: &HashSet<DocId>,
         transitive_dirty: &HashSet<DocId>,
         chunk_order: &[(usize, usize)],
+        names: &NameTable,
+        link_graph: &LinkGraph,
     ) -> anyhow::Result<()> {
         let to_rerender: Vec<DocId> = transitive_dirty.difference(stale_docs).copied().collect();
         if to_rerender.is_empty() {
@@ -483,6 +418,8 @@ impl Builder {
                     chunk_idx,
                     graph,
                     &*render_state,
+                    names,
+                    link_graph,
                 );
                 render_chunk(chunk, &ctx)
             };
@@ -501,6 +438,8 @@ impl Builder {
         stale_docs: &HashSet<DocId>,
         transitive_dirty: &HashSet<DocId>,
         doc_order: &[DocId],
+        names: &NameTable,
+        link_graph: &LinkGraph,
     ) -> anyhow::Result<()> {
         let project = &self.manifest.project;
         let dirty: HashSet<DocId> = stale_docs.union(transitive_dirty).copied().collect();
@@ -526,11 +465,30 @@ impl Builder {
             }
             self.rebuilt_count += 1;
 
-            let html: String = graph
+            let body: String = graph
                 .chunks_in(doc_id)
                 .iter()
                 .filter_map(|&cid| render_state.get(cid))
                 .collect();
+
+            let mut page = HtmlPage::new(body);
+            let orphan = link_graph.links_to(doc_id).is_empty();
+            page.set_orphan(orphan);
+
+            for edge in link_graph.links_from(doc_id) {
+                let target_doc = graph.doc(edge.target_doc).expect("target doc in graph");
+                let href = format!("{}.html", target_doc.rel_path);
+                let text = names.get(edge.display_id);
+                page.add_outlink(&href, text);
+            }
+            for edge in link_graph.links_to(doc_id) {
+                let source_doc = graph.doc(edge.source_doc).expect("source doc in graph");
+                let href = format!("{}.html", source_doc.rel_path);
+                let text = names.get(edge.display_id);
+                page.add_backlink(&href, text);
+            }
+
+            let html = page.render();
             let out_path = project.output_path_for_source(&p.rel_path);
 
             if let Some(parent) = out_path.parent() {
@@ -540,15 +498,5 @@ impl Builder {
         }
 
         Ok(())
-    }
-}
-
-fn range_idx(idx: i32, len: i32) -> i32 {
-    if idx < 0 {
-        0
-    } else if idx >= len {
-        len - 1
-    } else {
-        idx
     }
 }

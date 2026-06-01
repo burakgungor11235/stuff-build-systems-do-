@@ -127,11 +127,11 @@ impl Cas {
     }
 
     #[must_use]
+    #[allow(dead_code)]
     pub fn entry_count(&self) -> usize {
         self.index.entries.len()
     }
 
-    #[must_use]
     pub fn iter_entries(&self) -> impl Iterator<Item = (&str, &ArtifactMeta)> {
         self.index.entries.iter().map(|(k, v)| (k.as_str(), v))
     }
@@ -152,13 +152,14 @@ impl Cas {
         blake3::hash(content).as_bytes().to_vec()
     }
 
-    #[must_use]
     pub fn read_and_hash(path: &std::path::Path) -> std::io::Result<(String, Vec<u8>)> {
         let content = std::fs::read_to_string(path)?;
         let hash = Self::compute_content_hash(content.as_bytes());
         Ok((content, hash))
     }
 
+    #[must_use]
+    #[allow(dead_code)]
     // look ma, I made a gc language!
     pub fn gc(&mut self, live_keys: &HashSet<Hash>) -> usize {
         let mut removed = 0;

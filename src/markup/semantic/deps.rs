@@ -50,7 +50,8 @@ mod tests {
         let graph = make_graph();
         let reverse_deps = FxHashMap::default();
         let changed = HashSet::new();
-        let result = DependencyTracker::transitive_deps_with_reverse(&graph, &reverse_deps, &changed);
+        let result =
+            DependencyTracker::transitive_deps_with_reverse(&graph, &reverse_deps, &changed);
         assert!(result.is_empty());
     }
 
@@ -60,7 +61,8 @@ mod tests {
         let reverse_deps = FxHashMap::default();
         let mut changed = HashSet::new();
         changed.insert(DocId(0));
-        let result = DependencyTracker::transitive_deps_with_reverse(&graph, &reverse_deps, &changed);
+        let result =
+            DependencyTracker::transitive_deps_with_reverse(&graph, &reverse_deps, &changed);
         assert_eq!(result.len(), 1);
         assert!(result.contains(&DocId(0)));
     }
@@ -74,7 +76,8 @@ mod tests {
 
         let mut changed = HashSet::new();
         changed.insert(DocId(0));
-        let result = DependencyTracker::transitive_deps_with_reverse(&graph, &reverse_deps, &changed);
+        let result =
+            DependencyTracker::transitive_deps_with_reverse(&graph, &reverse_deps, &changed);
 
         assert_eq!(result.len(), 2);
         assert!(result.contains(&DocId(0)));
@@ -92,7 +95,8 @@ mod tests {
 
         let mut changed = HashSet::new();
         changed.insert(DocId(0));
-        let result = DependencyTracker::transitive_deps_with_reverse(&graph, &reverse_deps, &changed);
+        let result =
+            DependencyTracker::transitive_deps_with_reverse(&graph, &reverse_deps, &changed);
 
         assert_eq!(result.len(), 3);
         assert!(result.contains(&DocId(0)));
@@ -110,7 +114,8 @@ mod tests {
 
         let mut changed = HashSet::new();
         changed.insert(DocId(0));
-        let result = DependencyTracker::transitive_deps_with_reverse(&graph, &reverse_deps, &changed);
+        let result =
+            DependencyTracker::transitive_deps_with_reverse(&graph, &reverse_deps, &changed);
 
         assert_eq!(result.len(), 3);
         assert!(result.contains(&DocId(0)));
@@ -131,7 +136,8 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(DocId(0));
         changed.insert(DocId(1));
-        let result = DependencyTracker::transitive_deps_with_reverse(&graph, &reverse_deps, &changed);
+        let result =
+            DependencyTracker::transitive_deps_with_reverse(&graph, &reverse_deps, &changed);
 
         assert_eq!(result.len(), 3);
         assert!(result.contains(&DocId(0)));
