@@ -1,6 +1,6 @@
 [package]
 name = "sbd"
-version = "0.1.0"
+version = "0.1.0" 
 edition = "2021"
 
 [lib]
@@ -21,6 +21,8 @@ clap = { version = "4.0", features = ["derive"] }
 logos = "0.16.1"
 ansi_term = "0.12"
 rustyline = "14"
+notify = "8.2.0"
+notify-debouncer-mini = "0.7.0"
 
 [dev-dependencies]
 proptest = "1"

@@ -2,7 +2,7 @@ mod bs;
 mod markup;
 mod repl;
 
-use anyhow::Result;
+use anyhow::{Ok, Result};
 use bs::clean::Cleaner;
 use bs::status::Status;
 use bs::{builder::Builder, config::Manifest};
@@ -11,6 +11,8 @@ use std::env;
 use std::mem::forget;
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+use crate::bs::watch::stuff_watcher;
 
 #[derive(Parser)]
 #[command(name = "sbd")]
@@ -92,9 +94,9 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Build { config, watch } => {
             if watch {
-                // TODO: Implement watch mode
-                // TODO: Implement cache error detection (files deleted in cache improperly)
-                Err(anyhow::anyhow!("Watch mode not yet implemented"))
+                info!("watch mode started!");
+                stuff_watcher(&config)?;
+                Ok(())
             } else {
                 let manifest = Manifest::load(&config)?;
                 let mut builder = Builder::new(manifest)?;

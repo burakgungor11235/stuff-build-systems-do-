@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use std::ffi::OsStr;
+use std::fs::DirBuilder;
 use std::path::PathBuf;
+use std::str::FromStr;
 use walkdir::WalkDir;
 
 pub const SOURCE_EXTENSION: &str = "stuff";
@@ -42,5 +44,15 @@ impl ProjectConfig {
             .filter_map(|e| e.ok())
             // no magic numbers my arse.
             .filter(|e| e.path().extension() == Some(OsStr::new(SOURCE_EXTENSION)))
+    }
+    pub fn src_dir_abs(&self) -> PathBuf {
+        PathBuf::from_str(&format!(
+            "{}/{}",
+            self.manifest_dir.to_str().unwrap(),
+            self.src_dir
+        ))
+        .unwrap()
+        .canonicalize()
+        .unwrap()
     }
 }
