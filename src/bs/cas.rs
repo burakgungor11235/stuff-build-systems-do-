@@ -12,6 +12,8 @@ const ARTIFACT_EXT: &str = "bin";
 const ARTIFACT_TYPE: &str = "rendered_chunk";
 const HASH_TRUNCATION: usize = 20;
 const HASH_PREFIX_LEN: usize = 2;
+const RENDERER_VERSION: &str = "0";
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Hash(String);
@@ -140,6 +142,7 @@ impl Cas {
     pub fn compute_chunk_key(rel_path: &str, chunk_index: usize, content_hash: &[u8]) -> Hash {
         let mut hasher = blake3::Hasher::new();
         hasher.update(ARTIFACT_TYPE.as_bytes());
+        hasher.update(RENDERER_VERSION.as_bytes());
         hasher.update(rel_path.as_bytes());
         hasher.update(&chunk_index.to_le_bytes());
         hasher.update(content_hash);

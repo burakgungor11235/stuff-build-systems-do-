@@ -31,16 +31,6 @@ impl<'a> RenderContext<'a> {
         }
     }
 
-    pub fn for_chunk(
-        rel_path: &'a str,
-        chunk_idx: usize,
-        graph: &'a ChunkGraph,
-        state: &'a RenderState,
-        names: &'a NameTable,
-        link_graph: &'a LinkGraph,
-    ) -> Self {
-        Self::new(rel_path, chunk_idx, graph, state, names, link_graph)
-    }
 }
 
 pub fn render_to_html(doc: &Document, ctx: &RenderContext) -> String {
@@ -224,7 +214,7 @@ fn escape_html(s: &str) -> String {
 pub struct HtmlPage {
     body: String,
     orphan: bool,
-    backlinks: Vec<(String, String)>, // (href, display text)
+    backlinks: Vec<(String, String)>,
     outlinks: Vec<(String, String)>,
 }
 
