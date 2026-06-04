@@ -1,5 +1,6 @@
 use crate::bs::cas::Cas;
 use crate::bs::config::Manifest;
+use crate::bs::live::RELOAD_SCRIPT;
 use crate::markup::assembler::{render_chunk, HtmlPage, RenderContext};
 use crate::markup::ast::{extract_transclusion_refs, extract_wiki_links, Document};
 use crate::markup::parser::parse_with_names;
@@ -25,6 +26,8 @@ pub struct Builder {
     manifest: Manifest,
     cas: Cas,
     rebuilt_count: usize,
+    live: bool,
+    prev_content_hashes: Option<FxHashMap<String, Vec<u8>>>,
 }
 
 impl Builder {
@@ -34,7 +37,22 @@ impl Builder {
             manifest,
             cas,
             rebuilt_count: 0,
+            live: false,
+            prev_content_hashes: None,
         })
+    }
+
+    pub fn set_live_reload(&mut self, enabled: bool) {
+        self.live = enabled;
+    }
+
+    pub fn set_prev_content_hashes(&mut self, hashes: FxHashMap<String, Vec<u8>>) {
+        self.prev_content_hashes = Some(hashes);
+    }
+
+    #[must_use]
+    pub fn take_content_hashes(&mut self) -> Option<FxHashMap<String, Vec<u8>>> {
+        self.prev_content_hashes.take()
     }
 
     #[allow(unused)] // used in tests n stuff
@@ -53,6 +71,21 @@ impl Builder {
         let src_dir = project.src_dir_path();
         let mut names = NameTable::default();
         let parsed = self.parse_source_files(&src_dir, &mut names)?;
+
+        let cur_hashes: FxHashMap<String, Vec<u8>> = parsed
+            .iter()
+            .map(|p| (p.rel_path.clone(), p.content_hash.clone()))
+            .collect();
+
+        if let Some(ref prev) = self.prev_content_hashes {
+            if prev.len() == cur_hashes.len() && prev.iter().all(|(k, v)| cur_hashes.get(k) == Some(v))
+            {
+                info!("No content changes detected, skipping build");
+                return Ok(());
+            }
+        }
+        self.prev_content_hashes = Some(cur_hashes);
+
         let mut graph = ChunkGraph::default();
         let mut path_to_docid: FxHashMap<String, DocId> = FxHashMap::default();
         let mut id_to_parsed_idx: FxHashMap<DocId, usize> = FxHashMap::default();
@@ -216,8 +249,7 @@ impl Builder {
                 stale_docs.insert(doc_id);
             }
 
-            render_state.set(chunk_id, chunk_html);
-            render_state.set_inlines(chunk_id, chunk.inline_content());
+            render_state.store(chunk_id, chunk_html, chunk.inline_content());
             self.track_transclusion_deps(
                 chunk,
                 &p.rel_path,
@@ -248,7 +280,7 @@ impl Builder {
         }
 
         let ctx =
-            RenderContext::for_chunk(rel_path, chunk_idx, graph, render_state, names, link_graph);
+            RenderContext::new(rel_path, chunk_idx, graph, render_state, names, link_graph);
         let html = render_chunk(chunk, &ctx);
         self.cas.put(key, html.as_bytes())?;
         Ok((html, false))
@@ -412,19 +444,16 @@ impl Builder {
             let chunk_ids = graph.chunks_in(doc_id);
             let chunk_id = chunk_ids[chunk_idx];
             let chunk = &parsed[doc_idx].doc.chunks[chunk_idx];
-            let chunk_html = {
-                let ctx = RenderContext::for_chunk(
-                    &parsed[doc_idx].rel_path,
-                    chunk_idx,
-                    graph,
-                    &*render_state,
-                    names,
-                    link_graph,
-                );
-                render_chunk(chunk, &ctx)
-            };
-            render_state.set(chunk_id, chunk_html);
-            render_state.set_inlines(chunk_id, chunk.inline_content());
+            let ctx = RenderContext::new(
+                &parsed[doc_idx].rel_path,
+                chunk_idx,
+                graph,
+                &*render_state,
+                names,
+                link_graph,
+            );
+            let chunk_html = render_chunk(chunk, &ctx);
+            render_state.store(chunk_id, chunk_html, chunk.inline_content());
         }
         Ok(())
     }
@@ -487,8 +516,20 @@ impl Builder {
                 let text = names.get(edge.display_id);
                 page.add_backlink(&href, text);
             }
-
+            // TODO: FIX THIS JANK!
             let html = page.render();
+            let html = if self.live {
+                if let Some(pos) = html.rfind("</body>") {
+                    let mut new_html = html[..pos].to_string();
+                    new_html.push_str(RELOAD_SCRIPT);
+                    new_html.push_str(&html[pos..]);
+                    new_html
+                } else {
+                    html + RELOAD_SCRIPT
+                }
+            } else {
+                html
+            };
             let out_path = project.output_path_for_source(&p.rel_path);
 
             if let Some(parent) = out_path.parent() {

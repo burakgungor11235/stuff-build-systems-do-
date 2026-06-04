@@ -106,6 +106,13 @@ impl RenderState {
         }
     }
 
+    pub fn store(&mut self, chunk_id: ChunkId, html: String, inlines: Vec<ast::Inline>) {
+        let idx = chunk_id.0 as usize;
+        self.chunk_html[idx] = html;
+        self.chunk_ready[idx] = true;
+        self.chunk_inlines.insert(chunk_id, inlines);
+    }
+
     pub fn set_inlines(&mut self, chunk_id: ChunkId, inlines: Vec<ast::Inline>) {
         self.chunk_inlines.insert(chunk_id, inlines);
     }
@@ -246,27 +253,6 @@ impl ChunkGraph {
         self.page_id_to_docid.get(page_id).copied().flatten()
     }
 
-    /// Fuzzy fallback: when exact page_id lookup fails, find the closest
-    /// matching doc path by Levenshtein distance (max 2 edits or len/3).
-    /// Note: Not implemented just yet!!!!!!!!
-    pub fn resolve_wiki_page_fuzzy(&self, page_id: usize, names: &NameTable) -> Option<DocId> {
-        let target = names.get(page_id);
-        let mut best: Option<(DocId, usize)> = None;
-        let max_dist = std::cmp::max(2, target.len() / 3);
-
-        for (id, &opt_doc_id) in self.page_id_to_docid.iter().enumerate() {
-            let doc_id = opt_doc_id?;
-            let candidate = names.get(id);
-            let dist = levenshtein_distance(target, candidate);
-            if dist < max_dist && best.map_or(true, |(_, b)| dist < b) {
-                best = Some((doc_id, dist));
-            }
-            if dist == 0 {
-                return Some(doc_id);
-            }
-        }
-        best.map(|(id, _)| id)
-    }
 
     pub fn all_doc_ids(&self) -> Vec<DocId> {
         self.docs.iter().map(|d| d.id).collect()
@@ -274,14 +260,6 @@ impl ChunkGraph {
 
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()
-    }
-
-    #[cfg(test)]
-    pub fn add_wiki_page_mapping(&mut self, page_id: usize, doc_id: DocId) {
-        if page_id >= self.page_id_to_docid.len() {
-            self.page_id_to_docid.resize(page_id + 1, None);
-        }
-        self.page_id_to_docid[page_id] = Some(doc_id);
     }
 
     #[must_use]
