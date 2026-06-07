@@ -3,6 +3,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::TcpStream,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use tracing::{debug, warn};
@@ -96,7 +97,17 @@ fn serve_static_file(file_path: &PathBuf, stream: &mut TcpStream) {
         }
     }
 }
+pub fn open_url(url: &str) -> anyhow::Result<()> {
+    if cfg!(target_os = "windows") {
+        Command::new("cmd").args(["/C", "start", "", url]).spawn()?;
+    } else if cfg!(target_os = "macos") {
+        Command::new("open").arg(url).spawn()?;
+    } else {
+        Command::new("xdg-open").arg(url).spawn()?;
+    }
 
+    Ok(())
+}
 pub fn handle_client(mut stream: TcpStream, out_dir: &Path, live_r: &LiveReload) {
     let cloned = match stream.try_clone() {
         Ok(c) => c,

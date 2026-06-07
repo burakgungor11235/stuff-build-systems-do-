@@ -11,9 +11,10 @@ use crate::markup::semantic::{
     normalize_path, ChunkGraph, ChunkId, DocId, LinkGraph, NameTable, RenderState,
 };
 
+use anyhow::Result;
 use rustc_hash::FxHashMap;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 struct ParsedDoc {
@@ -78,7 +79,8 @@ impl Builder {
             .collect();
 
         if let Some(ref prev) = self.prev_content_hashes {
-            if prev.len() == cur_hashes.len() && prev.iter().all(|(k, v)| cur_hashes.get(k) == Some(v))
+            if prev.len() == cur_hashes.len()
+                && prev.iter().all(|(k, v)| cur_hashes.get(k) == Some(v))
             {
                 info!("No content changes detected, skipping build");
                 return Ok(());
@@ -279,8 +281,7 @@ impl Builder {
             return Ok((String::from_utf8(cached).unwrap_or_default(), true));
         }
 
-        let ctx =
-            RenderContext::new(rel_path, chunk_idx, graph, render_state, names, link_graph);
+        let ctx = RenderContext::new(rel_path, chunk_idx, graph, render_state, names, link_graph);
         let html = render_chunk(chunk, &ctx);
         self.cas.put(key, html.as_bytes())?;
         Ok((html, false))

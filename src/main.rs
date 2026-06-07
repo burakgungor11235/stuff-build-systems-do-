@@ -9,9 +9,11 @@ use bs::{builder::Builder, config::Manifest};
 use clap::{Parser, Subcommand};
 use std::env;
 use std::mem::forget;
+use std::process::Command;
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+use crate::bs::browser_utils::open_url;
 use crate::bs::watch::stuff_watcher;
 
 #[derive(Parser)]
@@ -35,6 +37,9 @@ enum Commands {
         /// Enable watch mode for hot reload
         #[arg(short, long)]
         watch: bool,
+
+        #[arg(short, long)]
+        open: bool,
     },
     Clean {
         /// Configuration file (default: ./stuff.toml)
@@ -92,15 +97,27 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Build { config, watch } => {
+        Commands::Build {
+            config,
+            watch,
+            open,
+        } => {
             if watch {
                 info!("watch mode started!");
-                stuff_watcher(&config)?;
-                Ok(())
+                stuff_watcher(&config, open)
             } else {
                 let manifest = Manifest::load(&config)?;
+                let entry_out = if open {
+                    let rel = manifest.project.entry_point_rel_out()?;
+                    Some(manifest.project.out_dir_path().join(rel))
+                } else {
+                    None
+                };
                 let mut builder = Builder::new(manifest)?;
                 builder.build()?;
+                if let Some(path) = entry_out {
+                    open_url(path.to_str().unwrap())?;
+                }
                 Ok(())
             }
         }

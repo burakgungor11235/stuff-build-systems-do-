@@ -6,11 +6,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use rustc_hash::FxHashMap;
 
-use crate::bs::browser_utils::handle_client;
+use crate::bs::browser_utils::{handle_client, open_url};
 use crate::bs::live::{LiveReload, LockExt};
 use crate::bs::{builder::Builder, config::Manifest};
 
@@ -30,10 +30,16 @@ struct WatchContext {
     live_reload: Arc<LiveReload>,
 }
 
-pub fn stuff_watcher(config_path: &str) -> anyhow::Result<()> {
+pub fn stuff_watcher(config_path: &str, open: bool) -> anyhow::Result<()> {
     let manifest = Manifest::load(config_path)?;
     let src_dir = manifest.project.src_dir_path();
     let out_dir = manifest.project.out_dir_path();
+
+    let entry_rel_out = if open {
+        manifest.project.entry_point_rel_out().ok()
+    } else {
+        None
+    };
 
     let live_reload = LiveReload::new();
 
@@ -46,7 +52,16 @@ pub fn stuff_watcher(config_path: &str) -> anyhow::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let addr = listener.local_addr()?;
     info!("oki dokey. running at {addr}");
-
+    if open {
+        if let Some(ref rel_path) = entry_rel_out {
+            match open_url(&format!("http://{}/{}", addr, rel_path.display())) {
+                Ok(_) => {}
+                Err(e) => {
+                    warn!("hmm... probably cannot open this url or smth: {}", e)
+                }
+            }
+        }
+    }
     let out_dir_srv = out_dir.clone();
     let live_reload_srv = live_reload.clone();
 
@@ -102,17 +117,15 @@ pub fn stuff_watcher(config_path: &str) -> anyhow::Result<()> {
                 }
             }
             Ok(Err(e)) => error!("Watch error: {:?}", e),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                match debounce_start {
-                    Some(t) if t.elapsed() >= debounce_dur => {
-                        debounce_start = None;
-                        if !ctx.running.swap(true, Ordering::AcqRel) {
-                            spawn_build(&ctx);
-                        }
+            Err(mpsc::RecvTimeoutError::Timeout) => match debounce_start {
+                Some(t) if t.elapsed() >= debounce_dur => {
+                    debounce_start = None;
+                    if !ctx.running.swap(true, Ordering::AcqRel) {
+                        spawn_build(&ctx);
                     }
-                    _ => {}
                 }
-            }
+                _ => {}
+            },
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
